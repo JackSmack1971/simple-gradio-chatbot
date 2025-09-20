@@ -6,8 +6,7 @@ import asyncio
 import time
 import json
 import psutil
-import os
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import patch
 from typing import Dict, Any, List
 from pathlib import Path
 
@@ -28,80 +27,8 @@ from tests.fixtures.test_data import (
     create_mock_event_data
 )
 
-# Mock constants for testing
-MOCK_API_KEY = "sk-or-v1-mock1234567890123456789012345678901234567890"
-
-
 class TestPhase7SystemIntegration:
     """Comprehensive system integration tests covering all components end-to-end."""
-
-    @pytest.fixture(scope="class")
-    def temp_data_dir(self, tmp_path_factory):
-        """Create temporary data directory for system tests."""
-        return tmp_path_factory.mktemp("system_test_data")
-
-    @pytest.fixture(scope="class")
-    def temp_config_dir(self, tmp_path_factory):
-        """Create temporary config directory for system tests."""
-        return tmp_path_factory.mktemp("system_test_config")
-
-    @pytest.fixture
-    def system_config(self, temp_config_dir, temp_data_dir):
-        """Create system configuration for testing."""
-        return {
-            "api_key": MOCK_API_KEY,
-            "data_dir": str(temp_data_dir),
-            "config_dir": str(temp_config_dir),
-            "model": "anthropic/claude-3-haiku",
-            "max_conversation_length": 100,
-            "timeout": 30
-        }
-
-    @pytest.fixture
-    async def full_system_app(self, system_config):
-        """Create fully integrated application instance."""
-        # Create components manually for testing
-        config_manager = ConfigManager(config_dir=system_config["config_dir"])
-        config_manager.set("api_key", system_config["api_key"])
-        config_manager.set("model", system_config["model"])
-
-        api_client_manager = APIClientManager()
-        conversation_manager = ConversationManager()
-        state_manager = StateManager()
-        event_bus = EventBus()
-
-        # Create chat controller with all dependencies
-        chat_controller = ChatController(
-            api_client_manager=api_client_manager,
-            conversation_manager=conversation_manager,
-            state_manager=state_manager
-        )
-
-        # Create mock app object
-        class MockApp:
-            def __init__(self):
-                self.config_manager = config_manager
-                self.api_client_manager = api_client_manager
-                self.conversation_manager = conversation_manager
-                self.state_manager = state_manager
-                self.chat_controller = chat_controller
-                self.event_bus = event_bus
-
-            async def initialize(self):
-                await self.event_bus.start()
-
-            async def cleanup(self):
-                await self.event_bus.stop()
-                self.chat_controller.cleanup()
-                self.state_manager.cleanup()
-
-        app = MockApp()
-        await app.initialize()
-
-        yield app
-
-        # Cleanup
-        await app.cleanup()
 
     def test_system_initialization_complete(self, full_system_app):
         """Test that all system components initialize correctly."""
