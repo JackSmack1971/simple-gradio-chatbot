@@ -40,6 +40,11 @@ class TestWCAGCompliance:
         # For now, test that the components have the expected methods
         assert hasattr(self.ui.input_panel, 'message_input')
         assert hasattr(self.ui.send_button, 'value')  # Gradio component
+        metadata = self.ui.get_message_input_metadata()
+        assert metadata.get('label_text') == 'Message'
+        assert metadata.get('aria_label') == 'Message'
+        assert metadata.get('show_label') is True
+        assert metadata.get('container') is True
 
     def test_keyboard_navigation_support(self):
         """Test keyboard navigation support."""
@@ -86,6 +91,10 @@ class TestWCAGCompliance:
 
         # Test input panel has proper labeling
         assert hasattr(self.ui.input_panel, 'message_input')
+        metadata = self.ui.get_message_input_metadata()
+        assert metadata.get('label_text') == 'Message'
+        assert metadata.get('describedby_id') == 'message-input-help'
+        assert metadata.get('help_text')
 
     def test_error_message_announcements(self):
         """Test that error messages are properly announced."""

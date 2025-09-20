@@ -20,6 +20,14 @@ class InputPanel:
         self.current_length = 0
         self.disabled = False
 
+        # Accessibility metadata for the message input field
+        self.message_label_text = "Message"
+        self.message_input_aria_label = "Message"
+        self.message_input_help_text = "Press Enter or click Send to submit your message."
+        self.message_input_help_id = "message-input-help"
+        self.message_label_visible = True
+        self.message_container_visible = True
+
         # Event handlers
         self.on_send_message: Optional[Callable] = None
         self.on_input_change: Optional[Callable] = None
@@ -34,16 +42,25 @@ class InputPanel:
         # Input area
         with gr.Row(elem_id="input-area"):
             with gr.Column(scale=1):
-                # Text input
+                # Text input with accessible labeling and description metadata
                 message_input = gr.Textbox(
-                    label="",
+                    label=self.message_label_text,
                     placeholder="Type your message...",
                     lines=3,
                     max_lines=6,
-                    show_label=False,
-                    container=False,
+                    show_label=self.message_label_visible,
+                    container=self.message_container_visible,
                     elem_id="message-input",
-                    interactive=not self.disabled
+                    interactive=not self.disabled,
+                    html_attributes={
+                        "aria-label": self.message_input_aria_label,
+                        "aria-describedby": self.message_input_help_id,
+                    }
+                )
+
+                message_input_help = gr.HTML(
+                    f"<div id=\"{self.message_input_help_id}\" class=\"input-help-text\">{self.message_input_help_text}</div>",
+                    elem_id="message-input-help-container"
                 )
 
                 # Character counter and controls
@@ -88,6 +105,8 @@ class InputPanel:
                         )
 
         # Set up event handlers
+        self.message_input_help = message_input_help
+
         self._setup_event_handlers_with_components(message_input, character_counter, send_button)
 
         return message_input, character_counter, send_button
@@ -200,6 +219,17 @@ class InputPanel:
     def get_input_value(self) -> str:
         """Get the current input value."""
         return ""
+
+    def get_message_input_accessibility_metadata(self) -> Dict[str, Any]:
+        """Return accessibility metadata for the message input component."""
+        return {
+            "label_text": self.message_label_text,
+            "aria_label": self.message_input_aria_label,
+            "describedby_id": self.message_input_help_id,
+            "help_text": self.message_input_help_text,
+            "show_label": self.message_label_visible,
+            "container": self.message_container_visible,
+        }
 
     def set_input_value(self, value: str) -> None:
         """Set the input value."""
