@@ -1,5 +1,6 @@
 # src/core/managers/api_client_manager.py
 import time
+from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple, Callable
 from datetime import datetime
 from enum import Enum
@@ -24,6 +25,15 @@ class RequestState(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     RETRYING = "retrying"
+
+
+@dataclass
+class APIRequestResult:
+    """Structured response for API requests exposing the tracking identifier."""
+
+    success: bool
+    request_id: str
+    data: Any
 
 
 class APIClientManager:
@@ -54,7 +64,8 @@ class APIClientManager:
         logger.info("APIClientManager initialized")
 
     def chat_completion(self, conversation_id: str, message: str, model: str = "anthropic/claude-3-haiku",
-                       **kwargs) -> Tuple[bool, Dict[str, Any]]:
+                       request_id_consumer: Optional[Callable[[str], None]] = None,
+                       **kwargs) -> APIRequestResult:
         """
         Perform a chat completion with full orchestration.
 
@@ -62,12 +73,18 @@ class APIClientManager:
             conversation_id: Conversation ID
             message: User message
             model: Model identifier
+            request_id_consumer: Optional callback invoked with generated request ID
             **kwargs: Additional parameters
 
         Returns:
-            Tuple of (success, response_data)
+            APIRequestResult exposing the request ID and response payload
         """
         request_id = self._generate_request_id()
+        if request_id_consumer:
+            try:
+                request_id_consumer(request_id)
+            except Exception as callback_error:
+                logger.error(f"request_id_consumer failed: {callback_error}")
         start_time = time.time()
 
         try:
@@ -82,12 +99,12 @@ class APIClientManager:
             # Validate conversation
             conversation = self.conversation_manager.get_conversation(conversation_id)
             if not conversation:
-                return False, {"error": f"Conversation {conversation_id} not found"}
+                return APIRequestResult(False, request_id, {"error": f"Conversation {conversation_id} not found"})
 
             # Add user message to conversation
             success = self.conversation_manager.add_message(conversation_id, message, "user")
             if not success:
-                return False, {"error": "Failed to add user message to conversation"}
+                return APIRequestResult(False, request_id, {"error": "Failed to add user message to conversation"})
 
             # Get conversation history
             messages = self._prepare_messages(conversation_id)
@@ -122,7 +139,7 @@ class APIClientManager:
                     'processing_time': time.time() - start_time
                 })
 
-            return success, response_data
+            return APIRequestResult(success, request_id, response_data)
 
         except Exception as e:
             logger.error(f"Chat completion failed: {str(e)}")
@@ -130,7 +147,7 @@ class APIClientManager:
                 'error': str(e),
                 'processing_time': time.time() - start_time
             })
-            return False, {"error": f"Chat completion failed: {str(e)}"}
+            return APIRequestResult(False, request_id, {"error": f"Chat completion failed: {str(e)}"})
 
     def _chat_completion_request(self, request_id: str, messages: List[Dict[str, Any]],
                                 model: str, **kwargs) -> Tuple[bool, Dict[str, Any]]:
@@ -189,7 +206,9 @@ class APIClientManager:
         return api_messages
 
     def stream_chat_completion(self, conversation_id: str, message: str, model: str = "anthropic/claude-3-haiku",
-                             callback: Optional[Callable[[str], None]] = None, **kwargs) -> Tuple[bool, str]:
+                             callback: Optional[Callable[[str], None]] = None,
+                             request_id_consumer: Optional[Callable[[str], None]] = None,
+                             **kwargs) -> APIRequestResult:
         """
         Perform a streaming chat completion.
 
@@ -198,12 +217,18 @@ class APIClientManager:
             message: User message
             model: Model identifier
             callback: Callback function for streaming chunks
+            request_id_consumer: Optional callback invoked with generated request ID
             **kwargs: Additional parameters
 
         Returns:
-            Tuple of (success, full_response)
+            APIRequestResult exposing the request ID and streaming payload
         """
         request_id = self._generate_request_id()
+        if request_id_consumer:
+            try:
+                request_id_consumer(request_id)
+            except Exception as callback_error:
+                logger.error(f"request_id_consumer failed: {callback_error}")
         start_time = time.time()
 
         try:
@@ -218,7 +243,7 @@ class APIClientManager:
             # Add user message
             success = self.conversation_manager.add_message(conversation_id, message, "user")
             if not success:
-                return False, "Failed to add user message"
+                return APIRequestResult(False, request_id, "Failed to add user message")
 
             # Get conversation history
             messages = self._prepare_messages(conversation_id)
@@ -232,7 +257,7 @@ class APIClientManager:
                     'error': error_message,
                     'processing_time': time.time() - start_time
                 })
-                return False, error_message
+                return APIRequestResult(False, request_id, error_message)
 
             full_response = payload
 
@@ -245,7 +270,7 @@ class APIClientManager:
                 'processing_time': time.time() - start_time
             })
 
-            return True, full_response
+            return APIRequestResult(True, request_id, full_response)
 
         except Exception as e:
             logger.error(f"Streaming chat completion failed: {str(e)}")
@@ -253,7 +278,7 @@ class APIClientManager:
                 'error': str(e),
                 'processing_time': time.time() - start_time
             })
-            return False, f"Streaming failed: {str(e)}"
+            return APIRequestResult(False, request_id, f"Streaming failed: {str(e)}")
 
     def _simulate_streaming_response(self, messages: List[Dict[str, Any]], model: str,
                                    callback: Optional[Callable[[str], None]] = None) -> Tuple[bool, str]:

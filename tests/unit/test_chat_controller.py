@@ -4,11 +4,13 @@ from unittest.mock import Mock, patch, MagicMock, call
 from datetime import datetime
 import time
 import uuid
+import threading
+import types
 
 from src.core.controllers.chat_controller import ChatController, OperationState
 from src.core.processors.message_processor import MessageProcessor
 from src.core.managers.conversation_manager import ConversationManager
-from src.core.managers.api_client_manager import APIClientManager
+from src.core.managers.api_client_manager import APIClientManager, APIRequestResult
 from src.core.managers.state_manager import StateManager
 from tests.fixtures.test_data import MOCK_CHAT_COMPLETION_RESPONSE
 
@@ -117,7 +119,11 @@ class TestChatController:
         }
 
         # Mock API response
-        mock_api_client_manager.chat_completion.return_value = (True, MOCK_CHAT_COMPLETION_RESPONSE)
+        mock_api_client_manager.chat_completion.return_value = APIRequestResult(
+            True,
+            "req_success_123",
+            MOCK_CHAT_COMPLETION_RESPONSE,
+        )
 
         with patch('time.time', side_effect=[100.0, 101.2]), \
              patch('uuid.uuid4', return_value=MagicMock(hex='abcd1234')):
@@ -130,6 +136,10 @@ class TestChatController:
         assert controller.metrics['successful_operations'] == 1
         assert controller.metrics['average_response_time'] == 1.2
         assert controller.current_operation is None  # Should be cleared after completion
+        assert any(
+            entry.get('metadata', {}).get('request_id') == 'req_success_123'
+            for entry in controller.operation_history
+        )
 
     def test_process_user_message_validation_failure(self, controller, mock_message_processor):
         """Test message processing with validation failure."""
@@ -190,7 +200,11 @@ class TestChatController:
         controller.conversation_manager.get_conversation.return_value = {
             'id': conversation_id
         }
-        mock_api_client_manager.chat_completion.return_value = (False, {"error": "API Error"})
+        mock_api_client_manager.chat_completion.return_value = APIRequestResult(
+            False,
+            "req_failure_123",
+            {"error": "API Error"},
+        )
 
         with patch('time.time', side_effect=[100.0, 101.0]):
             success, response = controller.process_user_message(user_input, conversation_id)
@@ -231,12 +245,20 @@ class TestChatController:
         controller.conversation_manager.get_conversation.return_value = {
             'id': conversation_id
         }
-        mock_api_client_manager.stream_chat_completion.return_value = (True, full_response)
+        mock_api_client_manager.stream_chat_completion.return_value = APIRequestResult(
+            True,
+            "req_stream_success",
+            full_response,
+        )
 
         success, response = controller.start_streaming_response(user_input, conversation_id, model)
 
         assert success is True
         assert response == full_response
+        assert any(
+            entry.get('metadata', {}).get('request_id') == 'req_stream_success'
+            for entry in controller.operation_history
+        )
 
     def test_start_streaming_response_validation_failure(self, controller, mock_message_processor):
         """Test streaming response with validation failure."""
@@ -266,7 +288,11 @@ class TestChatController:
         controller.conversation_manager.get_conversation.return_value = {
             'id': conversation_id
         }
-        mock_api_client_manager.stream_chat_completion.return_value = (False, "API Error")
+        mock_api_client_manager.stream_chat_completion.return_value = APIRequestResult(
+            False,
+            "req_stream_failure",
+            "API Error",
+        )
 
         success, response = controller.start_streaming_response(user_input, conversation_id)
 
@@ -278,14 +304,124 @@ class TestChatController:
         controller.current_operation = {
             'id': 'op_test123',
             'state': OperationState.PROCESSING,
-            'metadata': {'type': 'chat_completion'}
+            'metadata': {'type': 'chat_completion', 'request_id': 'req_current_123'},
+            'request_id': 'req_current_123',
         }
 
         result = controller.cancel_current_operation()
 
         assert result is True
         assert controller.current_operation['state'] == OperationState.CANCELLED
-        mock_api_client_manager.cancel_request.assert_called_once_with('op_test123')
+        mock_api_client_manager.cancel_request.assert_called_once_with('req_current_123')
+
+    def test_cancel_current_operation_removes_api_manager_entry(self):
+        """Simulate a live request cancellation and ensure API state is cleaned up."""
+        conversation_id = "conv_cancel"
+        request_registered = threading.Event()
+        release_request = threading.Event()
+
+        class BlockingOpenRouterClient:
+            def chat_completion(self, model, messages, **kwargs):
+                request_registered.wait()
+                release_request.wait()
+                return True, {
+                    "choices": [{"message": {"content": "ack"}}],
+                    "usage": {"total_tokens": 1},
+                }
+
+        class SimpleErrorHandler:
+            def execute_with_retry(self, func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+        class SimpleMessageProcessor:
+            def validate_message(self, message):
+                return True, "", {}
+
+        class SimpleConversationManager:
+            def __init__(self, conv_id: str):
+                self.conv_id = conv_id
+                self.messages = []
+
+            def get_conversation(self, conv_id: str):
+                if conv_id == self.conv_id:
+                    return {'id': conv_id}
+                return None
+
+            def add_message(self, conv_id: str, content: str, role: str = "user"):
+                if conv_id != self.conv_id:
+                    return False
+                self.messages.append({'conversation_id': conv_id, 'role': role, 'content': content})
+                return True
+
+            def get_conversation_messages(self, conv_id: str, limit: int = 50):
+                return [
+                    {'role': entry['role'], 'content': entry['content']}
+                    for entry in self.messages
+                    if entry['conversation_id'] == conv_id
+                ][:limit]
+
+        class SimpleStateManager:
+            def __init__(self, conv_id: str):
+                self.state = {
+                    'current_conversation': conv_id,
+                    'conversations': {conv_id: {'status': 'active'}},
+                }
+
+            def get_application_state(self):
+                return self.state
+
+            def update_application_state(self, updates):
+                self.state.update(updates)
+
+            def persist_state(self):
+                return True
+
+        conversation_manager = SimpleConversationManager(conversation_id)
+        state_manager = SimpleStateManager(conversation_id)
+        api_manager = APIClientManager(
+            openrouter_client=BlockingOpenRouterClient(),
+            rate_limiter=Mock(),
+            error_handler=SimpleErrorHandler(),
+            conversation_manager=conversation_manager,
+        )
+
+        controller = ChatController(
+            message_processor=SimpleMessageProcessor(),
+            conversation_manager=conversation_manager,
+            api_client_manager=api_manager,
+            state_manager=state_manager,
+        )
+
+        original_record = controller._record_request_id
+
+        def record_and_signal(self, operation_id: str, request_id: str):
+            original_record(operation_id, request_id)
+            if request_id:
+                request_registered.set()
+
+        controller._record_request_id = types.MethodType(record_and_signal, controller)
+
+        def run_process():
+            controller.process_user_message("hello", conversation_id)
+
+        worker = threading.Thread(target=run_process)
+        worker.start()
+
+        try:
+            assert request_registered.wait(timeout=2), "Request ID was not registered in time"
+
+            current_request_id = controller.current_operation.get('request_id')
+            assert current_request_id
+            assert current_request_id in api_manager.active_requests
+
+            cancelled = controller.cancel_current_operation()
+
+            assert cancelled is True
+            assert current_request_id not in api_manager.active_requests
+            assert controller.current_operation['state'] == OperationState.CANCELLED
+        finally:
+            release_request.set()
+            worker.join(timeout=2)
 
     def test_cancel_current_operation_no_active_operation(self, controller):
         """Test cancelling when no operation is active."""
@@ -515,11 +651,16 @@ class TestChatController:
 
     def test_cleanup(self, controller, mock_api_client_manager, mock_state_manager):
         """Test cleanup method."""
-        controller.current_operation = {'id': 'op_test123', 'state': OperationState.PROCESSING}
+        controller.current_operation = {
+            'id': 'op_test123',
+            'state': OperationState.PROCESSING,
+            'metadata': {'type': 'chat_completion', 'request_id': 'req_cleanup_123'},
+            'request_id': 'req_cleanup_123',
+        }
 
         controller.cleanup()
 
-        mock_api_client_manager.cancel_request.assert_called_once_with('op_test123')
+        mock_api_client_manager.cancel_request.assert_called_once_with('req_cleanup_123')
         mock_state_manager.persist_state.assert_called_once()
         assert controller.current_operation['state'] == OperationState.CANCELLED
 
@@ -554,7 +695,11 @@ class TestChatController:
         controller.conversation_manager.get_conversation.return_value = {
             'id': conversation_id
         }
-        mock_api_client_manager.chat_completion.return_value = (True, MOCK_CHAT_COMPLETION_RESPONSE)
+        mock_api_client_manager.chat_completion.return_value = APIRequestResult(
+            True,
+            "req_perf_123",
+            MOCK_CHAT_COMPLETION_RESPONSE,
+        )
 
         start_time = time.time()
         success, response = controller.process_user_message(user_input, conversation_id)

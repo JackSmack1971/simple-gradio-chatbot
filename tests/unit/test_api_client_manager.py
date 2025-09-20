@@ -5,6 +5,7 @@ from datetime import datetime
 
 from src.core.managers.api_client_manager import (
     APIClientManager,
+    APIRequestResult,
     RequestState,
     REQUEST_ID_PREFIX,
     REQUEST_ID_SUFFIX_HEX_LENGTH,
@@ -113,23 +114,45 @@ class TestAPIClientManager:
         }
         mock_openrouter_client.chat_completion.return_value = (True, mock_response)
 
-        success, response = manager.chat_completion(conversation_id, message, model)
+        result = manager.chat_completion(conversation_id, message, model)
 
-        assert success is True
-        assert response == mock_response
+        assert isinstance(result, APIRequestResult)
+        assert result.success is True
+        assert result.data == mock_response
+        assert result.request_id.startswith(REQUEST_ID_PREFIX)
         mock_conversation_manager.add_message.assert_any_call(conversation_id, message, "user")
         mock_conversation_manager.add_message.assert_any_call(
             conversation_id, "Hello! How can I help you?", "assistant"
         )
 
+    def test_chat_completion_provides_request_id_consumer(self, manager, mock_openrouter_client, mock_conversation_manager):
+        """Ensure callers can observe request identifiers via callback."""
+        conversation_id = "test-conv-456"
+        message = "Hi there"
+        captured_ids = []
+
+        mock_conversation_manager.get_conversation.return_value = {"id": conversation_id}
+        mock_conversation_manager.add_message.return_value = True
+        mock_conversation_manager.get_conversation_messages.return_value = []
+        mock_openrouter_client.chat_completion.return_value = (True, {"choices": []})
+
+        result = manager.chat_completion(
+            conversation_id,
+            message,
+            request_id_consumer=captured_ids.append,
+        )
+
+        assert result.request_id in captured_ids
+        assert captured_ids == [result.request_id]
+
     def test_chat_completion_conversation_not_found(self, manager, mock_conversation_manager):
         """Test chat completion with non-existent conversation."""
         mock_conversation_manager.get_conversation.return_value = None
 
-        success, response = manager.chat_completion("non-existent", "Hello")
+        result = manager.chat_completion("non-existent", "Hello")
 
-        assert success is False
-        assert "not found" in response["error"]
+        assert result.success is False
+        assert "not found" in result.data["error"]
 
     def test_chat_completion_add_user_message_failure(self, manager, mock_conversation_manager):
         """Test chat completion when adding user message fails."""
@@ -137,10 +160,10 @@ class TestAPIClientManager:
         mock_conversation_manager.get_conversation.return_value = {"id": conversation_id}
         mock_conversation_manager.add_message.return_value = False
 
-        success, response = manager.chat_completion(conversation_id, "Hello")
+        result = manager.chat_completion(conversation_id, "Hello")
 
-        assert success is False
-        assert "Failed to add user message" in response["error"]
+        assert result.success is False
+        assert "Failed to add user message" in result.data["error"]
 
     def test_chat_completion_api_failure(self, manager, mock_openrouter_client, mock_conversation_manager):
         """Test chat completion with API failure."""
@@ -151,10 +174,10 @@ class TestAPIClientManager:
 
         mock_openrouter_client.chat_completion.return_value = (False, {"error": "API Error"})
 
-        success, response = manager.chat_completion(conversation_id, "Hello")
+        result = manager.chat_completion(conversation_id, "Hello")
 
-        assert success is False
-        assert response["error"] == "API Error"
+        assert result.success is False
+        assert result.data["error"] == "API Error"
 
     def test_stream_chat_completion_success(self, manager, mock_openrouter_client, mock_conversation_manager):
         """Test successful streaming chat completion."""
@@ -170,10 +193,12 @@ class TestAPIClientManager:
         }
         mock_openrouter_client.chat_completion.return_value = (True, mock_response)
 
-        success, response = manager.stream_chat_completion(conversation_id, message)
+        result = manager.stream_chat_completion(conversation_id, message)
 
-        assert success is True
-        assert response == "Hello! How can I help?"
+        assert isinstance(result, APIRequestResult)
+        assert result.success is True
+        assert result.data == "Hello! How can I help?"
+        assert result.request_id.startswith(REQUEST_ID_PREFIX)
 
     def test_get_request_status(self, manager):
         """Test getting request status."""
@@ -423,10 +448,12 @@ class TestAPIClientManager:
         mock_openrouter_client.chat_completion.return_value = (False, {"error": "API Error"})
 
         with patch.object(manager, "_generate_request_id", return_value=request_id):
-            success, error_message = manager.stream_chat_completion(conversation_id, message)
+            result = manager.stream_chat_completion(conversation_id, message)
 
-        assert success is False
-        assert error_message == "API Error"
+        assert isinstance(result, APIRequestResult)
+        assert result.success is False
+        assert result.request_id == request_id
+        assert result.data == "API Error"
         mock_conversation_manager.add_message.assert_called_once_with(conversation_id, message, "user")
         assert request_id not in manager.active_requests
         assert len(manager.request_history) == 1
