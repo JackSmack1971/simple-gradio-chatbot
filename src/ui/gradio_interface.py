@@ -48,6 +48,28 @@ class MessageInputAdapter:
         }
 
 
+@dataclass
+class InputActionButtonAdapter:
+    """Adapter describing accessibility contract for supplemental action buttons."""
+
+    component: gr.Button
+    key: str
+    icon_text: str
+    accessible_label: str
+    visible_label: str
+    elem_id: str
+
+    def to_metadata(self) -> Dict[str, Any]:
+        """Return metadata dictionary capturing accessible naming contract."""
+        return {
+            "key": self.key,
+            "icon_text": self.icon_text,
+            "accessible_label": self.accessible_label,
+            "visible_label": self.visible_label,
+            "elem_id": self.elem_id,
+        }
+
+
 class GradioInterface:
     """
     Main Gradio interface application.
@@ -89,6 +111,7 @@ class GradioInterface:
 
         # Adapter handles
         self.message_input_adapter: Optional[MessageInputAdapter] = None
+        self.action_button_adapters: Dict[str, InputActionButtonAdapter] = {}
 
         # Instantiate interface immediately so component handles exist post-init
         self.interface = self.create_interface(run_state_setup=False)
@@ -158,6 +181,26 @@ class GradioInterface:
                 container=bool(metadata.get("container")),
             )
 
+        action_metadata = self.input_panel.get_action_button_accessibility_metadata()
+        action_components = {
+            "voice": getattr(self.input_panel, "voice_button", None),
+            "attachment": getattr(self.input_panel, "attach_button", None),
+            "options": getattr(self.input_panel, "options_button", None),
+        }
+        self.action_button_adapters = {}
+        for key, data in action_metadata.items():
+            component = action_components.get(key)
+            if component is None:
+                continue
+            self.action_button_adapters[key] = InputActionButtonAdapter(
+                component=component,
+                key=key,
+                icon_text=data.get("icon", ""),
+                accessible_label=data.get("accessible_label", ""),
+                visible_label=data.get("label", ""),
+                elem_id=data.get("elem_id", ""),
+            )
+
         if run_state_setup:
             self._setup_state_management()
             self._state_initialized = True
@@ -177,6 +220,13 @@ class GradioInterface:
         if self.message_input_adapter:
             return self.message_input_adapter.to_metadata()
         return {}
+
+    def get_input_action_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """Expose accessibility metadata for supplemental action buttons."""
+        return {
+            key: adapter.to_metadata()
+            for key, adapter in self.action_button_adapters.items()
+        }
 
     def _create_theme(self):
         """Create custom Gradio theme."""

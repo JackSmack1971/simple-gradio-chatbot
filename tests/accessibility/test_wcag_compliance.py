@@ -46,6 +46,11 @@ class TestWCAGCompliance:
         assert metadata.get('show_label') is True
         assert metadata.get('container') is True
 
+        action_metadata = self.ui.get_input_action_metadata()
+        assert action_metadata.get('voice', {}).get('accessible_label') == '🎤 Voice input'
+        assert action_metadata.get('attachment', {}).get('accessible_label') == '📎 Attach file'
+        assert action_metadata.get('options', {}).get('accessible_label') == '⚙️ Conversation options'
+
     def test_keyboard_navigation_support(self):
         """Test keyboard navigation support."""
         # Test that components support keyboard navigation
