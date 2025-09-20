@@ -8,7 +8,7 @@ from datetime import datetime
 from ...utils.logging import logger
 from ..processors.message_processor import MessageProcessor
 from ..managers.conversation_manager import ConversationManager
-from ..managers.api_client_manager import APIClientManager
+from ..managers.api_client_manager import APIClientManager, APIRequestResult
 from ..managers.state_manager import StateManager
 
 
@@ -108,9 +108,16 @@ class ChatController:
             self._set_operation_state(operation_id, OperationState.PROCESSING, operation_context)
 
             # Process message through API client manager
-            success, response_data = self.api_client_manager.chat_completion(
-                conversation_id, user_input, model, **kwargs
+            api_result = self.api_client_manager.chat_completion(
+                conversation_id,
+                user_input,
+                model,
+                request_id_consumer=lambda rid: self._record_request_id(operation_id, rid),
+                **kwargs
             )
+
+            self._record_request_id(operation_id, api_result.request_id)
+            success, response_data = api_result.success, api_result.data
 
             # Update metrics
             processing_time = self._calculate_processing_time(start_time)
@@ -121,7 +128,8 @@ class ChatController:
             self._set_operation_state(operation_id, final_state, {
                 'type': 'chat_completion',
                 'processing_time': processing_time,
-                'success': success
+                'success': success,
+                'request_id': api_result.request_id
             })
 
             # Update state manager
@@ -190,16 +198,25 @@ class ChatController:
             self._set_operation_state(operation_id, OperationState.STREAMING, operation_context)
 
             # Start streaming through API client manager
-            success, full_response = self.api_client_manager.stream_chat_completion(
-                conversation_id, user_input, model, callback, **kwargs
+            stream_result = self.api_client_manager.stream_chat_completion(
+                conversation_id,
+                user_input,
+                model,
+                callback,
+                request_id_consumer=lambda rid: self._record_request_id(operation_id, rid),
+                **kwargs
             )
+
+            self._record_request_id(operation_id, stream_result.request_id)
+            success, full_response = stream_result.success, stream_result.data
 
             # Update operation state
             final_state = OperationState.IDLE if success else OperationState.ERROR
             self._set_operation_state(operation_id, final_state, {
                 'type': 'streaming_response',
                 'success': success,
-                'response_length': len(full_response) if success else 0
+                'response_length': len(full_response) if success else 0,
+                'request_id': stream_result.request_id
             })
 
             return success, full_response
@@ -227,17 +244,20 @@ class ChatController:
             if not operation_type:
                 operation_type = self.current_operation.get('metadata', {}).get('type')
             previous_state = self.current_operation['state']
+            request_id = self._extract_request_id(self.current_operation)
             cancel_metadata: Dict[str, Any] = {}
             if operation_type:
                 cancel_metadata['type'] = operation_type
+            if request_id:
+                cancel_metadata['request_id'] = request_id
             self._set_operation_state(operation_id, OperationState.CANCELLED, cancel_metadata)
 
             # Cancel in API client manager if applicable
-            if operation_type in ['chat_completion', 'streaming_response'] or previous_state in {
+            if (operation_type in ['chat_completion', 'streaming_response'] or previous_state in {
                 OperationState.PROCESSING,
                 OperationState.STREAMING
-            }:
-                self.api_client_manager.cancel_request(operation_id)
+            }) and request_id:
+                self.api_client_manager.cancel_request(request_id)
 
             logger.info(f"Cancelled operation {operation_id}")
             return True
@@ -360,15 +380,19 @@ class ChatController:
         if metadata is None:
             metadata = {}
 
+        normalized_metadata = dict(metadata)
+
         operation_data = {
             'id': operation_id,
             'state': state,
             'started_at': f"{datetime.now().isoformat()}_{operation_id}",
-            'metadata': metadata
+            'metadata': normalized_metadata
         }
 
-        if 'type' in metadata:
-            operation_data['type'] = metadata['type']
+        if 'type' in normalized_metadata:
+            operation_data['type'] = normalized_metadata['type']
+        if 'request_id' in normalized_metadata:
+            operation_data['request_id'] = normalized_metadata['request_id']
 
         self.current_operation = operation_data
         self.operation_history.append(operation_data)
@@ -393,6 +417,38 @@ class ChatController:
             OperationState.CANCELLED
         }:
             self.current_operation = None
+
+    def _record_request_id(self, operation_id: str, request_id: Optional[str]) -> None:
+        """Attach the generated API request identifier to tracked operation metadata."""
+        if not request_id:
+            return
+
+        if self.current_operation and self.current_operation.get('id') == operation_id:
+            metadata = self.current_operation.setdefault('metadata', {})
+            metadata['request_id'] = request_id
+            self.current_operation['request_id'] = request_id
+
+        for entry in reversed(self.operation_history):
+            if entry.get('id') == operation_id:
+                entry_metadata = entry.setdefault('metadata', {})
+                entry_metadata['request_id'] = request_id
+                entry['request_id'] = request_id
+                break
+
+    def _extract_request_id(self, operation: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Safely retrieve the API request identifier from operation data."""
+        if not operation:
+            return None
+
+        explicit_id = operation.get('request_id')
+        if explicit_id:
+            return explicit_id
+
+        metadata = operation.get('metadata')
+        if isinstance(metadata, dict):
+            return metadata.get('request_id')
+
+        return None
 
     def _update_metrics(self, success: bool, processing_time: float,
                        response_data: Optional[Dict[str, Any]]) -> None:
