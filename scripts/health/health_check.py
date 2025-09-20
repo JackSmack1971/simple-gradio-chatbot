@@ -22,13 +22,15 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List
 
-# Add src directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+# Ensure project root is on the path for package imports
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from monitoring.health_monitor import health_monitor
-from monitoring.metrics_collector import metrics_collector
-from monitoring.performance_monitor import performance_monitor
-from utils.logging import logger
+from src.monitoring.health_monitor import health_monitor
+from src.monitoring.metrics_collector import metrics_collector
+from src.monitoring.performance_monitor import performance_monitor
+from src.utils.logging import logger
 
 
 def run_comprehensive_health_check() -> Dict[str, Any]:

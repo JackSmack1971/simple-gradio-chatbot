@@ -2,6 +2,5 @@
 
 from .chat_panel import ChatPanel
 from .settings_panel import SettingsPanel
-from .model_selector import ModelSelector
 
-__all__ = ["ChatPanel", "SettingsPanel", "ModelSelector"]
+__all__ = ["ChatPanel", "SettingsPanel"]

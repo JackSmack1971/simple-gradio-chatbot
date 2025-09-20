@@ -23,10 +23,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-# Add src directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+# Ensure project root is on the path for package imports
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from utils.logging import logger
+from src.utils.logging import logger
 
 
 class BackupValidator:
