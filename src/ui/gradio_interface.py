@@ -57,15 +57,31 @@ class GradioInterface:
         # Performance tracking
         self.load_start_time = None
 
+        # Track interface/state lifecycle
+        self.interface: Optional[gr.Blocks] = None
+        self._state_initialized = False
+
+        # Instantiate interface immediately so component handles exist post-init
+        self.interface = self.create_interface(run_state_setup=False)
+
         logger.info("GradioInterface initialized")
 
-    def create_interface(self) -> gr.Blocks:
+    def create_interface(self, run_state_setup: bool = True) -> gr.Blocks:
         """
         Create the main Gradio interface.
+
+        Args:
+            run_state_setup: Whether to initialize conversation state immediately.
 
         Returns:
             Gradio Blocks interface
         """
+        if self.interface is not None:
+            if run_state_setup and not self._state_initialized:
+                self._setup_state_management()
+                self._state_initialized = True
+            return self.interface
+
         self.load_start_time = datetime.now()
 
         # Create main interface with custom theme
@@ -99,10 +115,17 @@ class GradioInterface:
 
         # Set up event handlers and state management
         self._setup_event_handlers(interface)
-        self._setup_state_management()
+
+        if run_state_setup:
+            self._setup_state_management()
+            self._state_initialized = True
+        else:
+            self._state_initialized = False
 
         # Subscribe to events
         self._setup_event_subscriptions()
+
+        self.interface = interface
 
         logger.info("Gradio interface created")
         return interface
