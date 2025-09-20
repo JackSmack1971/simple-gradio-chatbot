@@ -354,11 +354,16 @@ class BackupManager:
         """Delete a backup."""
         try:
             backup_path = self.backup_dir / backup_name
-            if backup_path.exists():
-                shutil.rmtree(backup_path)
+            if not backup_path.exists():
+                logger.warning(f"Backup {backup_name} does not exist")
+                return False
 
+            shutil.rmtree(backup_path)
+
+            original_count = len(self.backups)
             self.backups = [b for b in self.backups if b['name'] != backup_name]
-            self._save_backup_metadata()
+            if len(self.backups) != original_count:
+                self._save_backup_metadata()
 
             logger.info(f"Deleted backup: {backup_name}")
             return True

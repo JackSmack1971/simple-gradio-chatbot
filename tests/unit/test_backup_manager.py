@@ -153,8 +153,12 @@ class TestBackupManager:
 
     def test_delete_nonexistent_backup(self):
         """Test deleting a non-existent backup."""
+        initial_backups = self.backup_manager.list_backups()
+
         result = self.backup_manager.delete_backup("nonexistent")
         assert result is False
+
+        assert self.backup_manager.list_backups() == initial_backups
 
     def test_apply_retention_policy(self):
         """Test applying retention policy."""
