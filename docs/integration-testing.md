@@ -590,8 +590,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-cov
+          pip install -e .[test]
       - name: Run integration tests
         run: pytest tests/integration/ -v --cov=src --cov-report=xml
       - name: Upload coverage

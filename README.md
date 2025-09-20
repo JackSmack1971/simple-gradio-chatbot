@@ -100,8 +100,10 @@ All core functionality is implemented and production-ready.
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+pip install -e .[test]
 ```
+
+This editable install pulls in the optional testing dependencies, ensuring packages like `psutil` are always available during development and continuous integration runs.
 
 ## Usage
 
@@ -125,6 +127,9 @@ The application will start a local web server and open your default browser to t
 The project includes comprehensive testing coverage:
 
 ```bash
+# Install dependencies (if not already installed)
+pip install -e .[test]
+
 # Run all tests
 python -m pytest tests/
 

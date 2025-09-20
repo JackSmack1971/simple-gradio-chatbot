@@ -348,8 +348,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov
+          pip install -e .[test]
       - name: Run tests
         run: pytest --cov=src --cov-report=xml
       - name: Upload coverage
