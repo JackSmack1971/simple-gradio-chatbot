@@ -11,6 +11,12 @@ from ...external.openrouter.error_handler import ErrorHandler
 from .conversation_manager import ConversationManager
 
 
+# Centralized request ID format controls to keep consistency across generators
+REQUEST_ID_PREFIX = "req_"
+REQUEST_ID_SUFFIX_HEX_LENGTH = 12
+REQUEST_ID_TOTAL_LENGTH = len(REQUEST_ID_PREFIX) + REQUEST_ID_SUFFIX_HEX_LENGTH
+
+
 class RequestState(Enum):
     """States for API request processing."""
     PENDING = "pending"
@@ -295,7 +301,8 @@ class APIClientManager:
         """
         if request_id in self.active_requests:
             self._update_request_state(request_id, RequestState.FAILED, {'cancelled': True})
-            del self.active_requests[request_id]
+            # Use pop to avoid race conditions where the update handler already removed the entry
+            self.active_requests.pop(request_id, None)
             logger.info(f"Cancelled request {request_id}")
             return True
 
@@ -328,7 +335,8 @@ class APIClientManager:
     def _generate_request_id(self) -> str:
         """Generate a unique request ID."""
         import uuid
-        return f"req_{uuid.uuid4().hex[:8]}"
+        # Security: deterministic prefix ensures IDs can be filtered while suffix stays random
+        return f"{REQUEST_ID_PREFIX}{uuid.uuid4().hex[:REQUEST_ID_SUFFIX_HEX_LENGTH]}"
 
     def _init_request_state(self, request_id: str, metadata: Dict[str, Any]) -> None:
         """Initialize request state tracking."""

@@ -3,7 +3,13 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock, call
 from datetime import datetime
 
-from src.core.managers.api_client_manager import APIClientManager, RequestState
+from src.core.managers.api_client_manager import (
+    APIClientManager,
+    RequestState,
+    REQUEST_ID_PREFIX,
+    REQUEST_ID_SUFFIX_HEX_LENGTH,
+    REQUEST_ID_TOTAL_LENGTH,
+)
 from src.external.openrouter.client import OpenRouterClient
 from src.external.openrouter.rate_limiter import RateLimiter
 from src.external.openrouter.error_handler import ErrorHandler
@@ -24,7 +30,14 @@ class TestAPIClientManager:
     @pytest.fixture
     def mock_error_handler(self):
         """Mock ErrorHandler for testing."""
-        return Mock(spec=ErrorHandler)
+        mock_handler = Mock(spec=ErrorHandler)
+
+        def passthrough(func, *args, **kwargs):
+            """Simulate retry wrapper by directly invoking the provided callable."""
+            return func(*args, **kwargs)
+
+        mock_handler.execute_with_retry.side_effect = passthrough
+        return mock_handler
 
     @pytest.fixture
     def mock_conversation_manager(self):
@@ -186,8 +199,8 @@ class TestAPIClientManager:
     def test_list_active_requests(self, manager):
         """Test listing active requests."""
         manager.active_requests = {
-            "req1": {"id": "req1", "state": "processing"},
-            "req2": {"id": "req2", "state": "completed"}
+            "req1": {"id": "req1", "state": "processing", "metadata": {}},
+            "req2": {"id": "req2", "state": "completed", "metadata": {}}
         }
 
         active = manager.list_active_requests()
@@ -196,13 +209,22 @@ class TestAPIClientManager:
         assert active[0]["id"] == "req1"
         assert active[1]["id"] == "req2"
 
+    def test_generate_request_id_length_and_format(self, manager):
+        """Ensure generated request IDs follow the centralized format."""
+        request_id = manager._generate_request_id()
+
+        assert request_id.startswith(REQUEST_ID_PREFIX)
+        assert len(request_id) == REQUEST_ID_TOTAL_LENGTH
+
+        # Validate hexadecimal suffix for robustness against format regressions
+        suffix = request_id[len(REQUEST_ID_PREFIX):]
+        assert len(suffix) == REQUEST_ID_SUFFIX_HEX_LENGTH
+        int(suffix, 16)  # Will raise ValueError if suffix is not valid hex
+
     def test_cancel_request(self, manager):
         """Test cancelling an active request."""
         request_id = "req_test_123"
-        manager.active_requests[request_id] = {
-            "id": request_id,
-            "state": "processing"
-        }
+        manager._init_request_state(request_id, {"reason": "unit-test"})
 
         success = manager.cancel_request(request_id)
 
