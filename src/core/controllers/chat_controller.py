@@ -90,7 +90,7 @@ class ChatController:
 
         try:
             # Validate chat request before marking the controller busy
-            is_valid, error = self.validate_chat_request(user_input, model)
+            is_valid, error = self.validate_chat_request(user_input, model, conversation_id)
             if not is_valid:
                 failure_detail = self._format_validation_failure(error)
                 response_error = f"Chat processing failed: {failure_detail}"
@@ -175,7 +175,7 @@ class ChatController:
 
         try:
             # Validate request before marking the controller busy
-            is_valid, error = self.validate_chat_request(user_input, model)
+            is_valid, error = self.validate_chat_request(user_input, model, conversation_id)
             if not is_valid:
                 failure_detail = self._format_validation_failure(error)
                 response_error = f"Streaming failed: {failure_detail}"
@@ -260,13 +260,15 @@ class ChatController:
             }
         return None
 
-    def validate_chat_request(self, user_input: str, model: str) -> Tuple[bool, str]:
+    def validate_chat_request(self, user_input: str, model: str,
+                              conversation_id: Optional[str] = None) -> Tuple[bool, str]:
         """
         Pre-validate chat request.
 
         Args:
             user_input: The user's message content
             model: Model identifier
+            conversation_id: Conversation identifier to validate against state manager
 
         Returns:
             Tuple of (is_valid, error_message)
@@ -280,6 +282,29 @@ class ChatController:
             # Validate model format (basic check)
             if not model or '/' not in model:
                 return False, "Invalid model format"
+
+            # Validate conversation availability via state manager or conversation manager
+            try:
+                state_snapshot = self.state_manager.get_application_state()
+            except Exception as state_error:
+                logger.error(f"Failed to retrieve application state: {state_error}")
+                return False, "Unable to verify active conversation"
+
+            active_conversation_id = conversation_id or state_snapshot.get('current_conversation')
+            if not active_conversation_id:
+                return False, "No active conversation is available"
+
+            conversations_state = state_snapshot.get('conversations', {})
+            conversation_state = conversations_state.get(active_conversation_id) if isinstance(conversations_state, dict) else None
+
+            if conversation_state and conversation_state.get('status') not in (None, 'active'):
+                return False, "Selected conversation is not active"
+
+            if conversation_state is None:
+                # Fall back to conversation manager to ensure the conversation exists
+                conversation_details = self.conversation_manager.get_conversation(active_conversation_id)
+                if not conversation_details:
+                    return False, "Active conversation could not be found"
 
             # Check current operation state
             if self.current_operation and self.current_operation['state'] in [

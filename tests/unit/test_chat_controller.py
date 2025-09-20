@@ -38,6 +38,15 @@ class TestChatController:
     def controller(self, mock_message_processor, mock_conversation_manager,
                   mock_api_client_manager, mock_state_manager):
         """Create ChatController with mocked dependencies."""
+        mock_state_manager.get_application_state.return_value = {
+            'current_conversation': 'conv_default',
+            'conversations': {
+                'conv_default': {'status': 'active'}
+            }
+        }
+        mock_conversation_manager.get_conversation.return_value = {
+            'id': 'conv_default'
+        }
         return ChatController(
             message_processor=mock_message_processor,
             conversation_manager=mock_conversation_manager,
@@ -97,6 +106,15 @@ class TestChatController:
 
         # Mock validation
         mock_message_processor.validate_message.return_value = (True, "", 10)
+        mock_state_manager.get_application_state.return_value = {
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        }
+        mock_conversation_manager.get_conversation.return_value = {
+            'id': conversation_id
+        }
 
         # Mock API response
         mock_api_client_manager.chat_completion.return_value = (True, MOCK_CHAT_COMPLETION_RESPONSE)
@@ -141,6 +159,15 @@ class TestChatController:
         }
 
         mock_message_processor.validate_message.return_value = (True, "", 5)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': conversation_id
+        }
 
         success, response = controller.process_user_message(user_input, conversation_id)
 
@@ -154,6 +181,15 @@ class TestChatController:
         conversation_id = "conv_test123"
 
         mock_message_processor.validate_message.return_value = (True, "", 5)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': conversation_id
+        }
         mock_api_client_manager.chat_completion.return_value = (False, {"error": "API Error"})
 
         with patch('time.time', side_effect=[100.0, 101.0]):
@@ -186,6 +222,15 @@ class TestChatController:
         full_response = "Once upon a time..."
 
         mock_message_processor.validate_message.return_value = (True, "", 15)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': conversation_id
+        }
         mock_api_client_manager.stream_chat_completion.return_value = (True, full_response)
 
         success, response = controller.start_streaming_response(user_input, conversation_id, model)
@@ -212,6 +257,15 @@ class TestChatController:
         conversation_id = "conv_test123"
 
         mock_message_processor.validate_message.return_value = (True, "", 5)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': conversation_id
+        }
         mock_api_client_manager.stream_chat_completion.return_value = (False, "API Error")
 
         success, response = controller.start_streaming_response(user_input, conversation_id)
@@ -269,10 +323,20 @@ class TestChatController:
         """Test successful chat request validation."""
         user_input = "Hello, how are you?"
         model = "anthropic/claude-3-haiku"
+        conversation_id = "conv_test123"
 
         mock_message_processor.validate_message.return_value = (True, "", 20)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': conversation_id
+        }
 
-        is_valid, error = controller.validate_chat_request(user_input, model)
+        is_valid, error = controller.validate_chat_request(user_input, model, conversation_id)
 
         assert is_valid is True
         assert error == ""
@@ -311,11 +375,34 @@ class TestChatController:
         }
 
         mock_message_processor.validate_message.return_value = (True, "", 5)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': 'conv_test123',
+            'conversations': {
+                'conv_test123': {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': 'conv_test123'
+        }
+
+        is_valid, error = controller.validate_chat_request(user_input, model, 'conv_test123')
+
+        assert is_valid is False
+        assert "Another operation is currently in progress" in error
+
+    def test_validate_chat_request_no_active_conversation(self, controller, mock_message_processor):
+        """Ensure validation fails when no active conversation is registered."""
+        user_input = "Hello"
+        model = "anthropic/claude-3-haiku"
+
+        mock_message_processor.validate_message.return_value = (True, "", 5)
+        controller.state_manager.get_application_state.return_value = {}
+        controller.conversation_manager.get_conversation.return_value = None
 
         is_valid, error = controller.validate_chat_request(user_input, model)
 
         assert is_valid is False
-        assert "Another operation is currently in progress" in error
+        assert error == "No active conversation is available"
 
     def test_validate_chat_request_exception(self, controller, mock_message_processor):
         """Test validation with exception."""
@@ -458,6 +545,15 @@ class TestChatController:
         conversation_id = "conv_perf123"
 
         mock_message_processor.validate_message.return_value = (True, "", 10)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': conversation_id
+        }
         mock_api_client_manager.chat_completion.return_value = (True, MOCK_CHAT_COMPLETION_RESPONSE)
 
         start_time = time.time()
@@ -482,6 +578,15 @@ class TestChatController:
         conversation_id = "conv_123"
 
         mock_message_processor.validate_message.return_value = (True, "", 15)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': conversation_id
+        }
 
         success, response = controller.process_user_message(user_input, conversation_id)
 
