@@ -4,7 +4,7 @@ Integration tests for UI components with ChatController.
 """
 
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import Mock, patch
 from datetime import datetime
 
 from src.core.controllers.chat_controller import ChatController
@@ -41,8 +41,9 @@ class TestUIChatControllerIntegration:
         assert error == ""
         mock_validate.assert_called_once_with("Test message", "test-model")
 
+    @pytest.mark.asyncio
     @patch('src.core.controllers.chat_controller.ChatController.process_user_message')
-    def test_message_processing_integration(self, mock_process):
+    async def test_message_processing_integration(self, mock_process):
         """Test message processing through UI and ChatController."""
         # Mock the process method
         mock_process.return_value = (True, {"response": "AI response", "usage": {"total_tokens": 100}})
@@ -50,11 +51,22 @@ class TestUIChatControllerIntegration:
         # Create a conversation first
         self.ui._create_new_conversation()
 
-        # Process message (this is async in the actual implementation)
-        # For testing purposes, we'll mock the async call
-        with patch.object(self.ui, '_handle_send_message', new_callable=AsyncMock) as mock_handle:
-            mock_handle.return_value = {"success": True}
-            result = await mock_handle("Test message")
+        def fake_start_streaming(message, conversation_id, model, callback, **kwargs):
+            """Simulate streaming by delegating to process_user_message."""
+            success, response_data = self.chat_controller.process_user_message(
+                message,
+                conversation_id,
+                model
+            )
+            if success:
+                return True, response_data["response"]
+            return False, response_data.get("error", "Unknown error")
+
+        # Process message through the UI while intercepting streaming
+        with patch.object(self.chat_controller, 'start_streaming_response', side_effect=fake_start_streaming):
+            result = await self.ui._handle_send_message("Test message")
+
+        assert result["success"] is True
 
         # Verify the call was made
         assert mock_process.called
