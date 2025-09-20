@@ -60,6 +60,8 @@ class ConfigManager:
                 logger.debug("Configuration loaded successfully")
             else:
                 self._config = {}
+                # Persist empty configuration immediately to enforce restrictive permissions
+                self._save_config()
                 logger.info("No existing configuration found, starting fresh")
         except InvalidToken:
             logger.error("Invalid encryption token - configuration may be corrupted")
