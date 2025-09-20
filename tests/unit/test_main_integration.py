@@ -38,6 +38,11 @@ class TestMainComponentsIntegration:
             state_manager=state_manager
         )
 
+        conversation_manager.get_conversation.side_effect = lambda conv_id: {
+            'id': conv_id,
+            'status': 'active'
+        }
+
         return {
             'controller': controller,
             'state_manager': state_manager,
@@ -96,6 +101,7 @@ class TestMainComponentsIntegration:
         """Test that controller operations update state appropriately."""
         controller = integrated_setup['controller']
         state_manager = integrated_setup['state_manager']
+        conversation_manager = integrated_setup['conversation_manager']
         message_processor = integrated_setup['message_processor']
         api_client_manager = integrated_setup['api_client_manager']
 
@@ -106,6 +112,12 @@ class TestMainComponentsIntegration:
         user_input = "Hello, world!"
         conversation_id = "conv_test123"
 
+        state_manager.update_application_state({
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        })
         with patch('time.time', side_effect=[100.0, 101.2]):
             success, response = controller.process_user_message(user_input, conversation_id)
 
@@ -155,18 +167,27 @@ class TestMainComponentsIntegration:
         assert "Validation failed" in response["error"]
 
         # Check that error state was recorded
-        assert controller.current_operation['state'] == OperationState.ERROR
+        assert controller.current_operation is None
+        assert controller.operation_history
+        assert controller.operation_history[-1]['state'] == OperationState.ERROR
 
     def test_concurrent_operation_prevention(self, integrated_setup):
         """Test prevention of concurrent operations."""
         controller = integrated_setup['controller']
         message_processor = integrated_setup['message_processor']
+        state_manager = integrated_setup['state_manager']
 
         # Start first operation
         controller._set_operation_state("op1", OperationState.PROCESSING)
 
         # Try second operation
         message_processor.validate_message.return_value = (True, "", 5)
+        state_manager.update_application_state({
+            'current_conversation': 'conv123',
+            'conversations': {
+                'conv123': {'status': 'active'}
+            }
+        })
 
         success, response = controller.process_user_message("test", "conv123")
 
@@ -202,12 +223,21 @@ class TestMainComponentsIntegration:
         controller = integrated_setup['controller']
         message_processor = integrated_setup['message_processor']
         api_client_manager = integrated_setup['api_client_manager']
+        state_manager = integrated_setup['state_manager']
 
         # Mock successful operations
         message_processor.validate_message.return_value = (True, "", 10)
         api_client_manager.chat_completion.return_value = (True, {
             **MOCK_CHAT_COMPLETION_RESPONSE,
             'usage': {'total_tokens': 25}
+        })
+
+        state_manager.update_application_state({
+            'current_conversation': 'conv1',
+            'conversations': {
+                'conv1': {'status': 'active'},
+                'conv2': {'status': 'active'}
+            }
         })
 
         # Perform multiple operations
@@ -228,7 +258,7 @@ class TestMainComponentsIntegration:
         assert metrics['successful_operations'] == 3
         assert metrics['failed_operations'] == 0
         assert metrics['total_tokens_processed'] == 75  # 25 * 3
-        assert metrics['operation_history_count'] == 3
+        assert metrics['operation_history_count'] == 6  # Each operation records start and completion states
 
     def test_cleanup_integration(self, integrated_setup):
         """Test cleanup integration across components."""
@@ -254,17 +284,30 @@ class TestMainComponentsIntegration:
         """Test validation integration across components."""
         controller = integrated_setup['controller']
         message_processor = integrated_setup['message_processor']
+        state_manager = integrated_setup['state_manager']
+        conversation_manager = integrated_setup['conversation_manager']
 
+        conversation_id = "conv_valid"
+        state_manager.update_application_state({
+            'current_conversation': conversation_id,
+            'conversations': {
+                conversation_id: {'status': 'active'}
+            }
+        })
         # Test successful validation
         message_processor.validate_message.return_value = (True, "", 15)
 
-        is_valid, error = controller.validate_chat_request("Valid message", "anthropic/claude-3-haiku")
+        is_valid, error = controller.validate_chat_request(
+            "Valid message", "anthropic/claude-3-haiku", conversation_id
+        )
         assert is_valid is True
         assert error == ""
 
         # Test validation with operation in progress
         controller._set_operation_state("op_blocking", OperationState.STREAMING)
-        is_valid, error = controller.validate_chat_request("Another message", "anthropic/claude-3-haiku")
+        is_valid, error = controller.validate_chat_request(
+            "Another message", "anthropic/claude-3-haiku", conversation_id
+        )
         assert is_valid is False
         assert "currently in progress" in error
 
@@ -273,10 +316,18 @@ class TestMainComponentsIntegration:
         controller = integrated_setup['controller']
         message_processor = integrated_setup['message_processor']
         api_client_manager = integrated_setup['api_client_manager']
+        state_manager = integrated_setup['state_manager']
 
         # Mock streaming setup
         message_processor.validate_message.return_value = (True, "", 20)
         api_client_manager.stream_chat_completion.return_value = (True, "Streaming response complete")
+
+        state_manager.update_application_state({
+            'current_conversation': 'conv_stream123',
+            'conversations': {
+                'conv_stream123': {'status': 'active'}
+            }
+        })
 
         success, response = controller.start_streaming_response(
             "Tell me a story", "conv_stream123", "anthropic/claude-3-haiku"
