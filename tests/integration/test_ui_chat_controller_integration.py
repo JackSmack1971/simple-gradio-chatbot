@@ -75,6 +75,7 @@ class TestUIChatControllerIntegration:
         assert call_args[1] == str(self.ui.current_conversation_id)  # conversation_id
         assert call_args[2] == self.ui.current_model  # model
 
+    @pytest.mark.asyncio
     @patch('src.core.controllers.chat_controller.ChatController.start_streaming_response')
     async def test_streaming_response_integration(self, mock_stream):
         """Test streaming response integration."""
@@ -85,11 +86,23 @@ class TestUIChatControllerIntegration:
         self.ui._create_new_conversation()
 
         # Start streaming
-        success, response = await self.ui._handle_send_message("Test streaming")
+        result = await self.ui._handle_send_message("Test streaming")
 
         assert mock_stream.called
-        assert success is True
-        assert response == "Full AI response"
+        assert result["success"] is True
+
+        assistant_message_id = result["message_id"]
+        messages = self.ui.chat_panel.get_messages()
+
+        # Expect user and assistant messages in chat history
+        assert len(messages) >= 2
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "Test streaming"
+
+        assistant_message = next(msg for msg in messages if msg["id"] == assistant_message_id)
+        assert assistant_message["role"] == "assistant"
+        assert assistant_message["content"].strip() == "Full AI response"
+        assert self.ui.chat_panel.is_streaming is False
 
     def test_model_update_integration(self):
         """Test model update integration between UI and ChatController."""
