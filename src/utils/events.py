@@ -1,6 +1,7 @@
 # src/utils/events.py
 import asyncio
 import time
+import uuid
 from typing import Dict, Any, Optional, Callable, List, Awaitable
 from enum import Enum
 from datetime import datetime
@@ -57,13 +58,11 @@ class Event:
 
     def _generate_event_id(self) -> str:
         """Generate a unique event ID."""
-        import uuid
-        return f"evt_{uuid.uuid4().hex[:8]}"
+        return f"evt_{uuid.uuid4().hex}"
 
     def _generate_correlation_id(self) -> str:
         """Generate a correlation ID for related events."""
-        import uuid
-        return f"corr_{uuid.uuid4().hex[:8]}"
+        return f"corr_{uuid.uuid4().hex}"
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -266,27 +265,37 @@ class EventBus:
             try:
                 # Wait for event with timeout
                 event = await asyncio.wait_for(self._event_queue.get(), timeout=1.0)
-                await self._handle_event(event)
-                self._event_queue.task_done()
-
             except asyncio.TimeoutError:
                 continue
+
+            try:
+                await self._handle_event(event)
             except Exception as e:
                 logger.error(f"Event processing error: {str(e)}")
-                self._stats['events_failed'] += 1
+            finally:
+                self._event_queue.task_done()
 
     async def _handle_event(self, event: Event) -> None:
         """Handle a single event."""
         start_time = time.time()
+        failure_recorded = False
+
+        def mark_failure() -> None:
+            nonlocal failure_recorded
+            if not failure_recorded:
+                self._stats['events_failed'] += 1
+                failure_recorded = True
 
         try:
             # Handle synchronous subscribers
             if event.event_type in self._subscribers:
-                for callback in self._subscribers[event.event_type]:
-                    try:
+                try:
+                    for callback in self._subscribers[event.event_type]:
                         callback(event)
-                    except Exception as e:
-                        logger.error(f"Sync event handler failed: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Sync event handler failed: {str(e)}")
+                    mark_failure()
+                    raise
 
             # Handle asynchronous subscribers
             if event.event_type in self._async_subscribers:
@@ -296,7 +305,11 @@ class EventBus:
                     tasks.append(task)
 
                 if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, Exception):
+                            failure_recorded = True
+                            raise result
 
             processing_time = time.time() - start_time
             self._stats['events_processed'] += 1
@@ -312,7 +325,9 @@ class EventBus:
 
         except Exception as e:
             logger.error(f"Event handling failed: {str(e)}")
-            self._stats['events_failed'] += 1
+            if not failure_recorded:
+                mark_failure()
+            raise
 
     async def _safe_call_async(self, callback: Callable[[Event], Awaitable[None]],
                               event: Event) -> None:
@@ -320,7 +335,9 @@ class EventBus:
         try:
             await callback(event)
         except Exception as e:
+            self._stats['events_failed'] += 1
             logger.error(f"Async event handler failed: {str(e)}")
+            raise
 
     def get_stats(self) -> Dict[str, Any]:
         """
