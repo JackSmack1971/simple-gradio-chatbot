@@ -64,13 +64,16 @@ class BackupManager:
         except Exception as e:
             logger.error(f"Failed to save backup metadata: {e}")
 
-    def _calculate_directory_hash(self, directory: Path) -> str:
+    def _calculate_directory_hash(self, directory: Path, ignore_filenames: Optional[set[str]] = None) -> str:
         """Calculate SHA256 hash of all files in a directory."""
         hash_obj = hashlib.sha256()
+        ignore_filenames = ignore_filenames or set()
 
         try:
             for file_path in sorted(directory.rglob("*")):
                 if file_path.is_file():
+                    if file_path.name in ignore_filenames:
+                        continue
                     with open(file_path, 'rb') as f:
                         while chunk := f.read(8192):
                             hash_obj.update(chunk)
@@ -86,13 +89,15 @@ class BackupManager:
             with gzip.open(dest_file, 'wb') as gz_file:
                 for file_path in source_dir.rglob("*"):
                     if file_path.is_file():
-                        # Write relative path and file content
+                        # Write relative path and file content metadata
                         rel_path = file_path.relative_to(source_dir)
-                        gz_file.write(f"FILE:{rel_path}\n".encode())
+                        gz_file.write(f"FILE:{rel_path}\n".encode("utf-8"))
+
+                        file_size = file_path.stat().st_size
+                        gz_file.write(f"SIZE:{file_size}\n".encode("utf-8"))
 
                         with open(file_path, 'rb') as src_file:
                             shutil.copyfileobj(src_file, gz_file)
-                        gz_file.write(b"\n")
             return True
         except Exception as e:
             logger.error(f"Failed to compress {source_dir}: {e}")
@@ -143,7 +148,7 @@ class BackupManager:
                     logger.error(f"Failed to backup {source_dir}")
 
             # Calculate overall backup hash
-            backup_info['hash'] = self._calculate_directory_hash(backup_path)
+            backup_info['hash'] = self._calculate_directory_hash(backup_path, ignore_filenames={"metadata.json"})
 
             # Save backup metadata
             metadata_file = backup_path / "metadata.json"
@@ -180,7 +185,7 @@ class BackupManager:
                 backup_info = json.load(f)
 
             # Verify overall backup hash
-            current_hash = self._calculate_directory_hash(backup_path)
+            current_hash = self._calculate_directory_hash(backup_path, ignore_filenames={"metadata.json"})
             if current_hash != backup_info.get('hash', ''):
                 logger.error(f"Backup {backup_name} hash mismatch")
                 return False
@@ -240,32 +245,46 @@ class BackupManager:
         """Extract a compressed directory."""
         try:
             with gzip.open(compressed_file, 'rb') as gz_file:
-                current_file = None
-                current_file_handle = None
+                while True:
+                    header = gz_file.readline()
+                    if not header:
+                        break
 
-                for line in gz_file:
-                    line = line.decode().strip()
-                    if line.startswith("FILE:"):
-                        # Close previous file
-                        if current_file_handle:
-                            current_file_handle.close()
+                    if not header.startswith(b"FILE:"):
+                        raise ValueError("Invalid backup format: missing FILE header")
 
-                        # Start new file
-                        rel_path = line[5:]  # Remove "FILE:" prefix
-                        current_file = target_dir / rel_path
-                        current_file.parent.mkdir(parents=True, exist_ok=True)
-                        current_file_handle = open(current_file, 'wb')
-                    elif current_file_handle and line == "":
-                        # Empty line indicates end of file
-                        current_file_handle.close()
-                        current_file_handle = None
-                    elif current_file_handle:
-                        # Write content
-                        current_file_handle.write(line.encode() + b"\n")
+                    rel_path_bytes = header[len(b"FILE:"):].rstrip(b"\n")
+                    rel_path = rel_path_bytes.decode('utf-8')
 
-                # Close final file
-                if current_file_handle:
-                    current_file_handle.close()
+                    size_line = gz_file.readline()
+                    if not size_line.startswith(b"SIZE:"):
+                        raise ValueError("Invalid backup format: missing SIZE header")
+
+                    size_value = size_line[len(b"SIZE:"):].rstrip(b"\n")
+                    try:
+                        file_size = int(size_value)
+                    except ValueError as exc:
+                        raise ValueError("Invalid backup format: SIZE is not an integer") from exc
+
+                    if file_size < 0:
+                        raise ValueError("Invalid backup format: SIZE cannot be negative")
+
+                    target_file = target_dir / rel_path
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+
+                    bytes_remaining = file_size
+                    with open(target_file, 'wb') as current_file_handle:
+                        # Security: enforce exact byte counts to prevent truncation or over-read
+                        while bytes_remaining > 0:
+                            chunk = gz_file.read(min(bytes_remaining, 65536))
+                            if not chunk:
+                                raise IOError("Unexpected end of backup data")
+                            current_file_handle.write(chunk)
+                            bytes_remaining -= len(chunk)
+
+                    # Backwards compatibility: discard legacy newline delimiter if present
+                    if hasattr(gz_file, 'peek') and gz_file.peek(1)[:1] == b"\n":
+                        gz_file.read(1)
 
             return True
         except Exception as e:

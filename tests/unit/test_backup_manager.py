@@ -99,6 +99,27 @@ class TestBackupManager:
             data = json.load(f)
         assert data == {"test": "data"}
 
+    def test_backup_restore_preserves_raw_bytes(self):
+        """Ensure backups keep exact bytes for whitespace and binary files."""
+        whitespace_path = self.source_dir / "whitespace.txt"
+        whitespace_content = b"  leading and trailing spaces  "
+        whitespace_path.write_bytes(whitespace_content)
+
+        binary_path = self.source_dir / "binary.bin"
+        binary_content = bytes([0, 255, 10, 13, 0, 1, 2, 3])
+        binary_path.write_bytes(binary_content)
+
+        backup_name = self.backup_manager.create_backup("raw_bytes")
+        assert backup_name is not None
+
+        restore_dir = self.temp_dir / "restore_raw"
+        result = self.backup_manager.restore_backup(backup_name, str(restore_dir))
+        assert result is True
+
+        restored_base = restore_dir / "source"
+        assert (restored_base / "whitespace.txt").read_bytes() == whitespace_content
+        assert (restored_base / "binary.bin").read_bytes() == binary_content
+
     def test_restore_nonexistent_backup(self):
         """Test restoring a non-existent backup."""
         result = self.backup_manager.restore_backup("nonexistent")
