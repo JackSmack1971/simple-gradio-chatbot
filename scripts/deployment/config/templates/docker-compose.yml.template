@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  personal-ai-chatbot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: personal-ai-chatbot
+    ports:
+      - "{{APP_PORT}}:7860"
+    environment:
+      # Application Configuration
+      - APP_HOST=0.0.0.0
+      - APP_PORT=7860
+      - APP_DEBUG=false
+
+      # API Configuration
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+      - OPENROUTER_MODEL=anthropic/claude-3-haiku
+
+      # Data Configuration
+      - DATA_DIR=/app/data
+      - CONFIG_FILE=/app/data/config/app_config.json
+      - LOG_DIR=/app/data/logs
+
+      # Security Configuration
+      - SECRET_KEY=${SECRET_KEY}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - LOG_LEVEL=INFO
+
+      # Performance Configuration
+      - MAX_MEMORY_MB=500
+      - MAX_REQUESTS_PER_MINUTE=50
+      - REQUEST_TIMEOUT_SECONDS=30
+
+    volumes:
+      # Persistent data storage
+      - ./data:/app/data
+
+      # Optional: Mount local config for development
+      # - ./config:/app/config:ro
+
+    networks:
+      - personal-ai-network
+
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/temp
+
+    # Logging
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: personal-ai-chatbot-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - personal-ai-chatbot
+    networks:
+      - personal-ai-network
+    restart: unless-stopped
+    profiles:
+      - nginx
+
+  # Optional: Redis for caching (if needed in future)
+  redis:
+    image: redis:7-alpine
+    container_name: personal-ai-chatbot-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - personal-ai-network
+    restart: unless-stopped
+    profiles:
+      - redis
+
+networks:
+  personal-ai-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local
+
+# Usage examples:
+# Basic deployment: docker-compose up -d
+# With nginx: docker-compose --profile nginx up -d
+# With redis: docker-compose --profile redis up -d
+# All services: docker-compose --profile nginx --profile redis up -d
