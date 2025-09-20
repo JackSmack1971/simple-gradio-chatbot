@@ -125,11 +125,54 @@ class EventBus:
 
         self._is_running = False
         if self._processing_task:
-            self._processing_task.cancel()
+            processing_task = self._processing_task
+            processing_task.cancel()
+
+            drain_timeout = 2.0
+            waiters = []
+
+            if not processing_task.done():
+                waiters.append(processing_task)
+
+            waiters.append(asyncio.create_task(self.wait_for_empty_queue(timeout=drain_timeout)))
+
+            done, pending = await asyncio.wait(waiters, timeout=drain_timeout, return_when=asyncio.FIRST_COMPLETED)
+
+            for task in pending:
+                task.cancel()
+
+            for task in done | pending:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.warning(f"EventBus stop wait task raised: {exc}")
+
             try:
-                await self._processing_task
+                await processing_task
             except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                logger.warning(f"EventBus processing task raised during shutdown: {exc}")
+
+            # Drain any leftover events to avoid dangling tasks
+            drained = 0
+            while True:
+                try:
+                    self._event_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                else:
+                    drained += 1
+                    self._event_queue.task_done()
+
+            if drained:
+                logger.debug(f"Drained {drained} pending events during shutdown")
+
+        # Reset lifecycle state to allow clean restart
+        self._processing_task = None
+        self._event_queue = asyncio.Queue()
 
         logger.info("EventBus stopped")
 
