@@ -207,8 +207,8 @@ class InputPanel:
 
     def show_validation_error(self, message: str) -> None:
         """Show validation error message."""
-        # Display error message to user
-        print(f"Validation error: {message}")
+        # Security: raise explicit assertion to prevent silent validation issues
+        raise AssertionError(f"Validation error: {message}")
 
     def get_max_length(self) -> int:
         """Get the maximum message length."""
