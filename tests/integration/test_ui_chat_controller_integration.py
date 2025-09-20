@@ -140,7 +140,8 @@ class TestUIChatControllerIntegration:
         assert len(events_received) == 1
         assert events_received[0].data["test"] == "data"
 
-    def test_error_handling_integration(self):
+    @pytest.mark.asyncio
+    async def test_error_handling_integration(self):
         """Test error handling integration."""
         # Test error notification
         error_message = "Test error message"
@@ -149,7 +150,7 @@ class TestUIChatControllerIntegration:
         self.ui._show_error_notification(error_message)
 
         # Test with invalid message
-        result = self.ui._handle_send_message("")  # Empty message
+        result = await self.ui._handle_send_message("")  # Empty message
 
         assert result["error"] == "Message cannot be empty"
 
