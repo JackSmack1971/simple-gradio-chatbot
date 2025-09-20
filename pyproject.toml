@@ -31,3 +31,12 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-markers",
+]
+markers = [
+    "e2e: end-to-end tests",
+    "asyncio: mark tests that require asyncio event loop",
+]
