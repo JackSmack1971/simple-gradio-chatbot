@@ -392,8 +392,45 @@ class TestAPIClientManager:
         }
         mock_openrouter_client.chat_completion.return_value = (True, mock_response)
 
-        response = manager._simulate_streaming_response(messages, model, test_callback)
+        success, response = manager._simulate_streaming_response(messages, model, test_callback)
 
+        assert success is True
         assert response == "Hello! How are you?"
         assert callback_count > 0  # Callback should have been called
         mock_openrouter_client.chat_completion.assert_called_once_with(model, messages)
+
+    def test_simulate_streaming_response_failure(self, manager, mock_openrouter_client):
+        """Streaming response should surface underlying API errors."""
+        messages = [{"role": "user", "content": "Hello"}]
+        model = "test-model"
+        mock_openrouter_client.chat_completion.return_value = (False, {"error": "API Error"})
+
+        success, error_message = manager._simulate_streaming_response(messages, model)
+
+        assert success is False
+        assert error_message == "API Error"
+        mock_openrouter_client.chat_completion.assert_called_once_with(model, messages)
+
+    def test_stream_chat_completion_failure_updates_state(self, manager, mock_openrouter_client, mock_conversation_manager):
+        """Streaming failure should mark request failed and avoid assistant message."""
+        conversation_id = "test-conv-123"
+        message = "Hello world!"
+        request_id = "req_test_failure"
+
+        mock_conversation_manager.get_conversation.return_value = {"id": conversation_id}
+        mock_conversation_manager.add_message.return_value = True
+        mock_conversation_manager.get_conversation_messages.return_value = []
+        mock_openrouter_client.chat_completion.return_value = (False, {"error": "API Error"})
+
+        with patch.object(manager, "_generate_request_id", return_value=request_id):
+            success, error_message = manager.stream_chat_completion(conversation_id, message)
+
+        assert success is False
+        assert error_message == "API Error"
+        mock_conversation_manager.add_message.assert_called_once_with(conversation_id, message, "user")
+        assert request_id not in manager.active_requests
+        assert len(manager.request_history) == 1
+        history_entry = manager.request_history[0]
+        assert history_entry["id"] == request_id
+        assert history_entry["state"] == RequestState.FAILED.value
+        assert history_entry["metadata"]["error"] == "API Error"

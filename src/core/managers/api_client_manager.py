@@ -224,7 +224,17 @@ class APIClientManager:
             messages = self._prepare_messages(conversation_id)
 
             # For now, simulate streaming (in a real implementation, this would use the actual streaming API)
-            full_response = self._simulate_streaming_response(messages, model, callback)
+            streaming_success, payload = self._simulate_streaming_response(messages, model, callback)
+
+            if not streaming_success:
+                error_message = payload or "Streaming request failed"
+                self._update_request_state(request_id, RequestState.FAILED, {
+                    'error': error_message,
+                    'processing_time': time.time() - start_time
+                })
+                return False, error_message
+
+            full_response = payload
 
             # Add assistant response
             if full_response:
@@ -246,7 +256,7 @@ class APIClientManager:
             return False, f"Streaming failed: {str(e)}"
 
     def _simulate_streaming_response(self, messages: List[Dict[str, Any]], model: str,
-                                   callback: Optional[Callable[[str], None]] = None) -> str:
+                                   callback: Optional[Callable[[str], None]] = None) -> Tuple[bool, str]:
         """Simulate a streaming response for demonstration."""
         # In a real implementation, this would use the actual streaming API
         # For now, make a regular request and simulate streaming
@@ -254,7 +264,12 @@ class APIClientManager:
         success, response = self.openrouter_client.chat_completion(model, messages)
 
         if not success:
-            return ""
+            # Security: do not leak raw structures; normalize into safe message
+            if isinstance(response, dict):
+                error_message = response.get('error') or response.get('message') or str(response)
+            else:
+                error_message = str(response)
+            return False, error_message or "Streaming request failed"
 
         full_content = response.get('choices', [{}])[0].get('message', {}).get('content', '')
 
@@ -266,7 +281,7 @@ class APIClientManager:
                 callback(chunk)
                 time.sleep(0.05)  # Simulate delay
 
-        return full_content
+        return True, full_content
 
     def get_request_status(self, request_id: str) -> Optional[Dict[str, Any]]:
         """
