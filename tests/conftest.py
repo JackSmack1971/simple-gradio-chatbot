@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import ExitStack
+from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional
 
 import pytest
+import pytest_asyncio
 
 from src.core.controllers.chat_controller import ChatController
 from src.core.managers.api_client_manager import APIClientManager
@@ -67,10 +68,10 @@ def system_config(tmp_path_factory: pytest.TempPathFactory) -> Dict[str, Any]:
     }
 
 
-@pytest.fixture(scope="session")
-def full_system_app(system_config: Dict[str, Any]) -> SimpleNamespace:
+@pytest_asyncio.fixture(scope="session")
+async def full_system_app(system_config: Dict[str, Any]) -> SimpleNamespace:
     """Assemble a fully wired application instance for high-level tests."""
-    with ExitStack() as stack:
+    async with AsyncExitStack() as stack:
         config_dir = Path(system_config["config_dir"])
         data_dir = Path(system_config["data_dir"])
 
@@ -111,10 +112,11 @@ def full_system_app(system_config: Dict[str, Any]) -> SimpleNamespace:
         )
         event_bus = EventBus()
 
-        def stop_event_bus() -> None:
-            asyncio.run(event_bus.stop())
+        async def stop_event_bus() -> None:
+            """Await event bus shutdown inside the fixture's event loop."""
+            await event_bus.stop()
 
-        stack.callback(stop_event_bus)
+        stack.push_async_callback(stop_event_bus)
 
         chat_controller = ChatController(
             message_processor=message_processor,
