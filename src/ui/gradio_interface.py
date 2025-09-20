@@ -6,11 +6,13 @@ This module provides the complete web interface using Gradio, integrating
 all UI components with the ChatController and EventBus for real-time updates.
 """
 
-import gradio as gr
 import asyncio
-from typing import Dict, Any, Optional, Callable
+from dataclasses import dataclass
 from datetime import datetime
 import json
+from typing import Dict, Any, Optional, Callable
+
+import gradio as gr
 
 from ..core.controllers.chat_controller import ChatController
 from ..utils.events import EventBus, EventType, EventPriority, publish_event_sync
@@ -20,6 +22,30 @@ from .components.sidebar_panel import SidebarPanel
 from .components.chat_panel import ChatPanel
 from .components.input_panel import InputPanel
 from .components.settings_panel import SettingsPanel
+
+
+@dataclass
+class MessageInputAdapter:
+    """Adapter exposing message input component accessibility metadata."""
+
+    component: gr.Textbox
+    label_text: str
+    aria_label: Optional[str]
+    describedby_id: Optional[str]
+    help_text: Optional[str]
+    show_label: bool
+    container: bool
+
+    def to_metadata(self) -> Dict[str, Any]:
+        """Return metadata dictionary for testing and inspection."""
+        return {
+            "label_text": self.label_text,
+            "aria_label": self.aria_label,
+            "describedby_id": self.describedby_id,
+            "help_text": self.help_text,
+            "show_label": self.show_label,
+            "container": self.container,
+        }
 
 
 class GradioInterface:
@@ -60,6 +86,9 @@ class GradioInterface:
         # Track interface/state lifecycle
         self.interface: Optional[gr.Blocks] = None
         self._state_initialized = False
+
+        # Adapter handles
+        self.message_input_adapter: Optional[MessageInputAdapter] = None
 
         # Instantiate interface immediately so component handles exist post-init
         self.interface = self.create_interface(run_state_setup=False)
@@ -116,6 +145,19 @@ class GradioInterface:
         # Set up event handlers and state management
         self._setup_event_handlers(interface)
 
+        # Update adapters for accessibility metadata
+        if self.message_input is not None:
+            metadata = self.input_panel.get_message_input_accessibility_metadata()
+            self.message_input_adapter = MessageInputAdapter(
+                component=self.message_input,
+                label_text=metadata.get("label_text"),
+                aria_label=metadata.get("aria_label"),
+                describedby_id=metadata.get("describedby_id"),
+                help_text=metadata.get("help_text"),
+                show_label=bool(metadata.get("show_label")),
+                container=bool(metadata.get("container")),
+            )
+
         if run_state_setup:
             self._setup_state_management()
             self._state_initialized = True
@@ -129,6 +171,12 @@ class GradioInterface:
 
         logger.info("Gradio interface created")
         return interface
+
+    def get_message_input_metadata(self) -> Dict[str, Any]:
+        """Expose message input accessibility metadata for tests."""
+        if self.message_input_adapter:
+            return self.message_input_adapter.to_metadata()
+        return {}
 
     def _create_theme(self):
         """Create custom Gradio theme."""
