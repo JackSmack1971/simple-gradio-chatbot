@@ -142,6 +142,7 @@ python -m pytest tests/accessibility/ # Accessibility tests
 # Generate coverage report
 python -m pytest --cov=src --cov-report=html
 ```
+Pytest is configured with `asyncio_mode = "auto"`, enabling `pytest-asyncio` to manage event loops without manual fixtures. This prevents conflicts when tests mix synchronous and asynchronous cases, especially when an event loop is already running.
 
 ### Test Coverage
 - **Unit Tests**: Component-level functionality testing
