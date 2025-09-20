@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock, AsyncMock
 import asyncio
 import uuid
+import time
 from datetime import datetime
 
 from src.utils.events import (
@@ -329,10 +330,11 @@ class TestEventBus:
         callback = AsyncMock(side_effect=Exception("Async error"))
         event = Event(EventType.USER_INPUT, {"input": "test"})
 
-        # Should not raise exception
-        await event_bus_instance._safe_call_async(callback, event)
+        with pytest.raises(Exception, match="Async error"):
+            await event_bus_instance._safe_call_async(callback, event)
 
         callback.assert_called_once_with(event)
+        assert event_bus_instance._stats['events_failed'] == 1
 
     def test_get_stats(self, event_bus_instance):
         """Test getting event processing statistics."""
@@ -386,26 +388,36 @@ class TestEventBus:
         event_bus_instance.subscribe(event_type, callback)
 
         # Mock time to control processing time
-        with patch('time.time', side_effect=[1.0, 1.5, 3.0, 3.2]):
-            await event_bus_instance.start()
+        real_time = time.time
+        base_time = real_time()
+        schedule = {
+            0: base_time,
+            1: base_time + 0.5,
+            2: base_time + 2.0,
+            3: base_time + 2.2,
+        }
+        call_count = {
+            'count': 0
+        }
 
-            # First event
-            event1 = Event(event_type, {"input": "test1"})
-            await event_bus_instance.publish(event1)
-            await asyncio.sleep(0.1)
+        def time_side_effect():
+            index = call_count['count']
+            call_count['count'] += 1
+            return schedule.get(index, real_time())
 
-            # Second event
-            event2 = Event(event_type, {"input": "test2"})
-            await event_bus_instance.publish(event2)
-            await asyncio.sleep(0.1)
+        event1 = Event(event_type, {"input": "test1"})
+        event2 = Event(event_type, {"input": "test2"})
 
-            await event_bus_instance.stop()
+        with patch('time.time', side_effect=time_side_effect):
+            await event_bus_instance._handle_event(event1)
+            await event_bus_instance._handle_event(event2)
 
         # Check processing times: 0.5s first, 0.2s second, average = (0.5 + 0.2) / 2 = 0.35
         assert event_bus_instance._stats['events_processed'] == 2
         assert abs(event_bus_instance._stats['processing_time_avg'] - 0.35) < 0.01
 
-    def test_multiple_subscribers_same_event(self, event_bus_instance):
+    @pytest.mark.asyncio
+    async def test_multiple_subscribers_same_event(self, event_bus_instance):
         """Test multiple subscribers for the same event type."""
         callback1 = Mock()
         callback2 = Mock()
@@ -417,14 +429,44 @@ class TestEventBus:
         event = Event(event_type, {"state": "changed"})
 
         # Simulate handling (normally done in _handle_event)
-        event_bus_instance._handle_event(event)
+        await event_bus_instance._handle_event(event)
 
         callback1.assert_called_once_with(event)
         callback2.assert_called_once_with(event)
 
     @pytest.mark.asyncio
+    async def test_handle_event_sync_failure_increments_stats(self, event_bus_instance):
+        """Ensure sync handler failures increment stats and propagate."""
+        callback = Mock(side_effect=Exception("Callback boom"))
+        event_type = EventType.ERROR
+        event = Event(event_type, {"error": "boom"})
+
+        event_bus_instance.subscribe(event_type, callback)
+
+        with pytest.raises(Exception, match="Callback boom"):
+            await event_bus_instance._handle_event(event)
+
+        assert event_bus_instance._stats['events_failed'] == 1
+        assert event_bus_instance._stats['events_processed'] == 0
+
+    @pytest.mark.asyncio
+    async def test_handle_event_async_failure_increments_stats(self, event_bus_instance):
+        """Ensure async handler failures increment stats and propagate."""
+        callback = AsyncMock(side_effect=Exception("Async boom"))
+        event_type = EventType.API_RESPONSE
+        event = Event(event_type, {"response": "boom"})
+
+        event_bus_instance.subscribe_async(event_type, callback)
+
+        with pytest.raises(Exception, match="Async boom"):
+            await event_bus_instance._handle_event(event)
+
+        assert event_bus_instance._stats['events_failed'] == 1
+        assert event_bus_instance._stats['events_processed'] == 0
+
+    @pytest.mark.asyncio
     async def test_async_subscriber_exception_handling(self, event_bus_instance):
-        """Test that async subscriber exceptions don't break processing."""
+        """Test that async subscriber exceptions are recorded."""
         callback1 = AsyncMock(side_effect=Exception("Async error"))
         callback2 = AsyncMock()
         event_type = EventType.API_RESPONSE
@@ -439,7 +481,8 @@ class TestEventBus:
 
         callback1.assert_called_once()
         callback2.assert_called_once()
-        assert event_bus_instance._stats['events_processed'] == 1
+        assert event_bus_instance._stats['events_failed'] == 1
+        assert event_bus_instance._stats['events_processed'] == 0
 
 
 class TestGlobalFunctions:
@@ -457,10 +500,12 @@ class TestGlobalFunctions:
             mock_event = Mock()
             mock_event_class.return_value = mock_event
 
+            mock_bus.publish = AsyncMock()
+
             await publish_event(event_type, data, priority, source)
 
             mock_event_class.assert_called_once_with(event_type, data, priority, source)
-            mock_bus.publish.assert_called_once_with(mock_event)
+            mock_bus.publish.assert_awaited_once_with(mock_event)
 
     def test_publish_event_sync(self):
         """Test global publish_event_sync function."""
