@@ -3,16 +3,12 @@
 
 import sys
 import asyncio
-from pathlib import Path
 
-# Add src directory to Python path for imports
-sys.path.insert(0, str(Path(__file__).parent))
-
-from utils.logging import logger
-from utils.events import event_bus, EventType, EventPriority
-from core.controllers.chat_controller import ChatController
-from core.managers.state_manager import StateManager
-from ui.gradio_interface import create_gradio_interface
+from src.utils.logging import logger
+from src.utils.events import event_bus, EventType, EventPriority
+from src.core.controllers.chat_controller import ChatController
+from src.core.managers.state_manager import StateManager
+from src.ui.gradio_interface import create_gradio_interface
 
 
 async def initialize_phase5_components():
