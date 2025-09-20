@@ -32,6 +32,14 @@ class InputPanel:
         self.on_send_message: Optional[Callable] = None
         self.on_input_change: Optional[Callable] = None
 
+        # Store accessibility metadata for supplemental action buttons
+        self._action_button_metadata: Dict[str, Dict[str, Any]] = {}
+
+        # Component references for icon-based buttons (populated at render time)
+        self.voice_button: Optional[gr.Button] = None
+        self.attach_button: Optional[gr.Button] = None
+        self.options_button: Optional[gr.Button] = None
+
     def create_input_panel(self):
         """
         Create the input panel UI components.
@@ -72,28 +80,28 @@ class InputPanel:
 
                     # Action buttons
                     with gr.Row():
-                        voice_button = gr.Button(
-                            "🎤",
-                            variant="secondary",
-                            size="sm",
+                        voice_button = self._create_icon_button(
+                            key="voice",
+                            icon="🎤",
+                            label="Voice input",
                             elem_id="voice-btn",
-                            interactive=False  # Disabled for now
+                            interactive=False,
                         )
 
-                        attach_button = gr.Button(
-                            "📎",
-                            variant="secondary",
-                            size="sm",
+                        attach_button = self._create_icon_button(
+                            key="attachment",
+                            icon="📎",
+                            label="Attach file",
                             elem_id="attach-btn",
-                            interactive=False  # Disabled for now
+                            interactive=False,
                         )
 
-                        options_button = gr.Button(
-                            "⚙️",
-                            variant="secondary",
-                            size="sm",
+                        options_button = self._create_icon_button(
+                            key="options",
+                            icon="⚙️",
+                            label="Conversation options",
                             elem_id="options-btn",
-                            interactive=False  # Disabled for now
+                            interactive=False,
                         )
 
                         send_button = gr.Button(
@@ -106,10 +114,44 @@ class InputPanel:
 
         # Set up event handlers
         self.message_input_help = message_input_help
+        self.voice_button = voice_button
+        self.attach_button = attach_button
+        self.options_button = options_button
 
         self._setup_event_handlers_with_components(message_input, character_counter, send_button)
 
         return message_input, character_counter, send_button
+
+    def _create_icon_button(
+        self,
+        *,
+        key: str,
+        icon: str,
+        label: str,
+        elem_id: str,
+        interactive: bool,
+    ) -> gr.Button:
+        """Create an icon button with accessible labeling metadata."""
+
+        accessible_value = f"{icon} {label}"
+
+        button = gr.Button(
+            accessible_value,
+            variant="secondary",
+            size="sm",
+            elem_id=elem_id,
+            interactive=interactive,
+        )
+
+        # Persist metadata so tests and adapters can validate accessible names
+        self._action_button_metadata[key] = {
+            "icon": icon,
+            "label": label,
+            "accessible_label": accessible_value,
+            "elem_id": elem_id,
+        }
+
+        return button
 
     def _setup_event_handlers_with_components(self, message_input, character_counter, send_button) -> None:
         """Set up event handlers for input interactions."""
@@ -230,6 +272,12 @@ class InputPanel:
             "show_label": self.message_label_visible,
             "container": self.message_container_visible,
         }
+
+    def get_action_button_accessibility_metadata(self) -> Dict[str, Dict[str, str]]:
+        """Return accessibility metadata for supplemental action buttons."""
+
+        # Return a shallow copy to prevent downstream mutation of component state
+        return {key: value.copy() for key, value in self._action_button_metadata.items()}
 
     def set_input_value(self, value: str) -> None:
         """Set the input value."""
