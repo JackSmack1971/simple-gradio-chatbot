@@ -90,13 +90,20 @@ class EventBus:
     the application, supporting both synchronous and asynchronous event handling.
     """
 
-    def __init__(self):
-        """Initialize the event bus."""
+    def __init__(self, drain_timeout: float = 2.0):
+        """Initialize the event bus.
+
+        Args:
+            drain_timeout: Maximum time in seconds to wait for queue draining
+                during shutdown. Allows tuning for test environments to avoid
+                long waits.
+        """
         self._subscribers: Dict[EventType, List[Callable]] = {}
         self._async_subscribers: Dict[EventType, List[Callable]] = {}
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._processing_task: Optional[asyncio.Task] = None
         self._is_running = False
+        self._drain_timeout = drain_timeout
 
         # Event processing statistics
         self._stats = {
@@ -117,8 +124,13 @@ class EventBus:
         self._processing_task = asyncio.create_task(self._process_events())
         logger.info("EventBus started")
 
-    async def stop(self) -> None:
-        """Stop the event processing loop."""
+    async def stop(self, drain_timeout: Optional[float] = None) -> None:
+        """Stop the event processing loop.
+
+        Args:
+            drain_timeout: Optional override for the drain timeout used during
+                shutdown. Defaults to the value configured at initialization.
+        """
         if not self._is_running:
             return
 
@@ -127,15 +139,23 @@ class EventBus:
             processing_task = self._processing_task
             processing_task.cancel()
 
-            drain_timeout = 2.0
+            timeout = self._drain_timeout if drain_timeout is None else drain_timeout
             waiters = []
 
             if not processing_task.done():
                 waiters.append(processing_task)
 
-            waiters.append(asyncio.create_task(self.wait_for_empty_queue(timeout=drain_timeout)))
+            waiters.append(
+                asyncio.create_task(
+                    self.wait_for_empty_queue(timeout=timeout)
+                )
+            )
 
-            done, pending = await asyncio.wait(waiters, timeout=drain_timeout, return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait(
+                waiters,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED
+            )
 
             for task in pending:
                 task.cancel()

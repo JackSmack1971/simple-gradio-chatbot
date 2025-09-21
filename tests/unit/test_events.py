@@ -1,6 +1,6 @@
 # tests/unit/test_events.py
 import pytest
-from unittest.mock import Mock, patch, MagicMock, AsyncMock
+from unittest.mock import Mock, patch, AsyncMock
 import asyncio
 import uuid
 import time
@@ -110,7 +110,7 @@ class TestEventBus:
     @pytest.fixture
     def event_bus_instance(self):
         """Create a fresh EventBus instance for testing."""
-        return EventBus()
+        return EventBus(drain_timeout=0.05)
 
     def test_initialization(self, event_bus_instance):
         """Test EventBus initialization."""
@@ -239,7 +239,13 @@ class TestEventBus:
     @pytest.mark.asyncio
     async def test_event_processing(self, event_bus_instance):
         """Test event processing loop."""
+        processed_event = asyncio.Event()
         callback = Mock()
+
+        def on_event(event_arg):
+            processed_event.set()
+
+        callback.side_effect = on_event
         event_type = EventType.USER_INPUT
         event = Event(event_type, {"input": "test"})
 
@@ -251,8 +257,8 @@ class TestEventBus:
         # Publish event
         await event_bus_instance.publish(event)
 
-        # Wait a bit for processing
-        await asyncio.sleep(0.1)
+        # Wait for the callback to be invoked
+        await asyncio.wait_for(processed_event.wait(), timeout=0.5)
 
         # Stop processing
         await event_bus_instance.stop()
@@ -264,7 +270,12 @@ class TestEventBus:
     @pytest.mark.asyncio
     async def test_event_processing_with_async_subscriber(self, event_bus_instance):
         """Test event processing with async subscriber."""
-        callback = AsyncMock()
+        processed_event = asyncio.Event()
+
+        async def handler(event_arg):
+            processed_event.set()
+
+        callback = AsyncMock(side_effect=handler)
         event_type = EventType.API_RESPONSE
         event = Event(event_type, {"response": "ok"})
 
@@ -272,16 +283,22 @@ class TestEventBus:
 
         await event_bus_instance.start()
         await event_bus_instance.publish(event)
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(processed_event.wait(), timeout=0.5)
         await event_bus_instance.stop()
 
-        callback.assert_called_once_with(event)
+        callback.assert_awaited_once_with(event)
         assert event_bus_instance._stats['events_processed'] == 1
 
     @pytest.mark.asyncio
     async def test_event_processing_callback_exception(self, event_bus_instance):
         """Test event processing when callback raises exception."""
-        callback = Mock(side_effect=Exception("Callback error"))
+        processed_event = asyncio.Event()
+
+        def failing_callback(event_arg):
+            processed_event.set()
+            raise Exception("Callback error")
+
+        callback = Mock(side_effect=failing_callback)
         event_type = EventType.ERROR
         event = Event(event_type, {"error": "test"})
 
@@ -289,7 +306,7 @@ class TestEventBus:
 
         await event_bus_instance.start()
         await event_bus_instance.publish(event)
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(processed_event.wait(), timeout=0.5)
         await event_bus_instance.stop()
 
         callback.assert_called_once_with(event)
@@ -298,21 +315,66 @@ class TestEventBus:
     @pytest.mark.asyncio
     async def test_event_processing_timeout(self, event_bus_instance):
         """Test event processing timeout handling."""
-        await event_bus_instance.start()
+        processed_event = asyncio.Event()
 
-        # Mock queue.get to timeout
-        with patch.object(event_bus_instance._event_queue, 'get', side_effect=asyncio.TimeoutError):
-            # Process events briefly
-            task = asyncio.create_task(event_bus_instance._process_events())
-            await asyncio.sleep(0.1)
-            task.cancel()
+        async def timeout_get(*args, **kwargs):
+            processed_event.set()
+            raise asyncio.TimeoutError
 
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        # Mock queue.get to timeout and ensure the processing loop continues
+        with patch.object(
+            event_bus_instance._event_queue,
+            'get',
+            AsyncMock(side_effect=timeout_get)
+        ):
+            await event_bus_instance.start()
+            await asyncio.wait_for(processed_event.wait(), timeout=0.5)
+            await event_bus_instance.stop()
 
-        await event_bus_instance.stop()
+    @pytest.mark.asyncio
+    async def test_stop_returns_quickly_when_queue_get_timeouts(self, event_bus_instance):
+        """Ensure stop completes promptly when queue.get repeatedly times out."""
+        processed_event = asyncio.Event()
+
+        async def timeout_get(*args, **kwargs):
+            processed_event.set()
+            raise asyncio.TimeoutError
+
+        with patch.object(
+            event_bus_instance._event_queue,
+            'get',
+            AsyncMock(side_effect=timeout_get)
+        ):
+            await event_bus_instance.start()
+            await asyncio.wait_for(processed_event.wait(), timeout=0.5)
+            stop_task = asyncio.create_task(event_bus_instance.stop())
+            await asyncio.wait_for(stop_task, timeout=0.2)
+
+    @pytest.mark.asyncio
+    async def test_stop_handles_queue_join_timeout(self, event_bus_instance):
+        """Ensure stop handles queue.join raising TimeoutError without delay."""
+        processed_event = asyncio.Event()
+
+        async def timeout_get(*args, **kwargs):
+            processed_event.set()
+            raise asyncio.TimeoutError
+
+        async def join_timeout():
+            raise asyncio.TimeoutError
+
+        with patch.object(
+            event_bus_instance._event_queue,
+            'get',
+            AsyncMock(side_effect=timeout_get)
+        ), patch.object(
+            event_bus_instance._event_queue,
+            'join',
+            AsyncMock(side_effect=join_timeout)
+        ):
+            await event_bus_instance.start()
+            await asyncio.wait_for(processed_event.wait(), timeout=0.5)
+            stop_task = asyncio.create_task(event_bus_instance.stop())
+            await asyncio.wait_for(stop_task, timeout=0.2)
 
     @pytest.mark.asyncio
     async def test_safe_call_async_success(self, event_bus_instance):
@@ -467,8 +529,18 @@ class TestEventBus:
     @pytest.mark.asyncio
     async def test_async_subscriber_exception_handling(self, event_bus_instance):
         """Test that async subscriber exceptions are recorded."""
-        callback1 = AsyncMock(side_effect=Exception("Async error"))
-        callback2 = AsyncMock()
+        first_callback_triggered = asyncio.Event()
+        second_callback_triggered = asyncio.Event()
+
+        async def failing_callback(event_arg):
+            first_callback_triggered.set()
+            raise Exception("Async error")
+
+        async def successful_callback(event_arg):
+            second_callback_triggered.set()
+
+        callback1 = AsyncMock(side_effect=failing_callback)
+        callback2 = AsyncMock(side_effect=successful_callback)
         event_type = EventType.API_RESPONSE
 
         event_bus_instance.subscribe_async(event_type, callback1)
@@ -476,11 +548,17 @@ class TestEventBus:
 
         await event_bus_instance.start()
         await event_bus_instance.publish(Event(event_type, {"response": "test"}))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(
+            asyncio.gather(
+                first_callback_triggered.wait(),
+                second_callback_triggered.wait()
+            ),
+            timeout=0.5
+        )
         await event_bus_instance.stop()
 
-        callback1.assert_called_once()
-        callback2.assert_called_once()
+        callback1.assert_awaited_once()
+        callback2.assert_awaited_once()
         assert event_bus_instance._stats['events_failed'] == 1
         assert event_bus_instance._stats['events_processed'] == 0
 
@@ -530,11 +608,14 @@ class TestEventSystemIntegration:
     @pytest.mark.asyncio
     async def test_full_event_lifecycle(self):
         """Test complete event publishing and handling lifecycle."""
-        bus = EventBus()
+        bus = EventBus(drain_timeout=0.05)
         received_events = []
+        processed_event = asyncio.Event()
 
         def event_handler(event):
             received_events.append(event)
+            if len(received_events) == 2:
+                processed_event.set()
 
         # Subscribe to events
         bus.subscribe(EventType.USER_INPUT, event_handler)
@@ -551,7 +632,7 @@ class TestEventSystemIntegration:
         await bus.publish(event2)
 
         # Wait for processing
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(processed_event.wait(), timeout=0.5)
 
         # Stop processing
         await bus.stop()
