@@ -244,7 +244,7 @@ class ErrorHandler:
             logger.info(f"Handled error: {log_data}")
 
         result = {
-            'error_type': error_type,
+            'error_type': error_type.value,
             'user_message': user_message,
             'should_retry': should_retry_attempt,
             'attempt_count': attempt_count
@@ -272,6 +272,36 @@ class ErrorHandler:
         """
         max_attempts = max_attempts or (self.max_retries + 1)
         attempt_count = 0
+        last_error_info: Optional[Dict[str, Any]] = None
+        last_raw_error: Any = None
+
+        def _format_failure_payload(error_info: Dict[str, Any], raw_error: Any,
+                                     attempt_index: int, override_retry: Optional[bool] = None) -> Dict[str, Any]:
+            """Create a consistent failure payload with sanitized content."""
+            sanitized_message = error_info.get('user_message') or self.get_user_friendly_message(raw_error)
+            payload: Dict[str, Any] = {'error': sanitized_message}
+
+            error_type = error_info.get('error_type')
+            if error_type:
+                payload['details'] = {'type': error_type}
+
+            retry_metadata = {
+                'attempt': attempt_index + 1,
+                'max_attempts': max_attempts
+            }
+
+            if override_retry is None:
+                retry_metadata['will_retry'] = error_info.get('should_retry', False)
+            else:
+                retry_metadata['will_retry'] = override_retry
+
+            backoff_time = error_info.get('backoff_time')
+            if backoff_time is not None:
+                retry_metadata['backoff_seconds'] = backoff_time
+
+            payload['retry'] = retry_metadata
+
+            return payload
 
         while attempt_count < max_attempts:
             try:
@@ -285,8 +315,17 @@ class ErrorHandler:
                     else:
                         # Handle API error response
                         error_info = self.handle_error(data, attempt_count=attempt_count)
+                        if error_info.get('should_retry'):
+                            error_type_value = error_info.get('error_type', ErrorType.UNKNOWN.value)
+                            error_enum = ErrorType(error_type_value) if error_type_value in ErrorType._value2member_map_ else ErrorType.UNKNOWN
+                            error_info['backoff_time'] = self.calculate_backoff(attempt_count, error_enum)
+
+                        failure_payload = _format_failure_payload(error_info, data, attempt_count)
+                        last_error_info = error_info
+                        last_raw_error = data
+
                         if not error_info['should_retry']:
-                            return False, error_info['user_message']
+                            return False, failure_payload
                         else:
                             backoff_time = error_info.get('backoff_time', self.base_backoff)
                             logger.info(f"Retrying after {backoff_time}s (attempt {attempt_count + 1}/{max_attempts})")
@@ -300,8 +339,17 @@ class ErrorHandler:
                 # Handle unexpected exceptions
                 error_data = {'error': str(e)}
                 error_info = self.handle_error(error_data, attempt_count=attempt_count)
+                if error_info.get('should_retry'):
+                    error_type_value = error_info.get('error_type', ErrorType.UNKNOWN.value)
+                    error_enum = ErrorType(error_type_value) if error_type_value in ErrorType._value2member_map_ else ErrorType.UNKNOWN
+                    error_info['backoff_time'] = self.calculate_backoff(attempt_count, error_enum)
+
+                failure_payload = _format_failure_payload(error_info, error_data, attempt_count)
+                last_error_info = error_info
+                last_raw_error = error_data
+
                 if not error_info['should_retry']:
-                    return False, error_info['user_message']
+                    return False, failure_payload
                 else:
                     backoff_time = error_info.get('backoff_time', self.base_backoff)
                     logger.info(f"Retrying after exception: {backoff_time}s (attempt {attempt_count + 1}/{max_attempts})")
@@ -309,4 +357,25 @@ class ErrorHandler:
                     attempt_count += 1
 
         # All attempts exhausted
-        return False, f"Operation failed after {max_attempts} attempts"
+        if last_error_info is not None:
+            exhausted_payload = _format_failure_payload(
+                last_error_info,
+                last_raw_error,
+                max(attempt_count - 1, 0),
+                override_retry=False
+            )
+            exhausted_payload['retry']['will_retry'] = False
+            exhausted_payload['retry']['attempt'] = max_attempts
+            return False, exhausted_payload
+
+        fallback_message = self._sanitize_error_message(
+            f"Operation failed after {max_attempts} attempts"
+        )
+        return False, {
+            'error': fallback_message,
+            'retry': {
+                'attempt': max_attempts,
+                'max_attempts': max_attempts,
+                'will_retry': False
+            }
+        }

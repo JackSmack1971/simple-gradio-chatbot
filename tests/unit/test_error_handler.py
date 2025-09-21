@@ -144,7 +144,7 @@ class TestErrorHandler:
         error_data = {"code": "rate_limit_exceeded"}
         result = error_handler.handle_error(error_data, status_code=429, attempt_count=0)
 
-        assert result["error_type"] == ErrorType.RATE_LIMIT
+        assert result["error_type"] == ErrorType.RATE_LIMIT.value
         assert result["should_retry"] is True
         assert "backoff_time" in result
         assert "Rate limit exceeded" in result["user_message"]
@@ -154,7 +154,7 @@ class TestErrorHandler:
         error_data = {"code": "authentication_invalid"}
         result = error_handler.handle_error(error_data, status_code=401, attempt_count=0)
 
-        assert result["error_type"] == ErrorType.AUTHENTICATION
+        assert result["error_type"] == ErrorType.AUTHENTICATION.value
         assert result["should_retry"] is False
         assert "backoff_time" not in result
 
@@ -198,7 +198,8 @@ class TestErrorHandler:
         success, result = error_handler.execute_with_retry(always_failing_func)
 
         assert success is False
-        assert "failed after" in result.lower()
+        assert "failed after" in result["error"].lower()
+        assert result["retry"]["will_retry"] is False
         assert mock_sleep.call_count == 3  # Max retries
 
     @patch('time.sleep')
@@ -232,4 +233,6 @@ class TestErrorHandler:
         success, result = error_handler.execute_with_retry(failing_func, max_attempts=2)
 
         assert success is False
+        assert "failure" in result["error"].lower()
+        assert result["retry"]["max_attempts"] == 2
         assert call_count == 2  # Only 2 attempts instead of default 4

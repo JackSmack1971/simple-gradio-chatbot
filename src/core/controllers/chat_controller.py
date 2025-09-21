@@ -123,14 +123,30 @@ class ChatController:
             processing_time = self._calculate_processing_time(start_time)
             self._update_metrics(success, processing_time, response_data)
 
-            # Update operation state
-            final_state = OperationState.IDLE if success else OperationState.ERROR
-            self._set_operation_state(operation_id, final_state, {
-                'type': 'chat_completion',
-                'processing_time': processing_time,
-                'success': success,
-                'request_id': api_result.request_id
-            })
+            # Update operation state with structured error metadata on failure
+            if success:
+                self._set_operation_state(operation_id, OperationState.IDLE, {
+                    'type': 'chat_completion',
+                    'processing_time': processing_time,
+                    'success': success,
+                    'request_id': api_result.request_id
+                })
+            else:
+                failure_metadata = {
+                    'type': 'chat_completion',
+                    'processing_time': processing_time,
+                    'success': success,
+                    'request_id': api_result.request_id,
+                    'error': response_data.get('error') if isinstance(response_data, dict) else str(response_data)
+                }
+
+                if isinstance(response_data, dict):
+                    if 'details' in response_data:
+                        failure_metadata['details'] = response_data['details']
+                    if 'retry' in response_data:
+                        failure_metadata['retry'] = response_data['retry']
+
+                self._set_operation_state(operation_id, OperationState.ERROR, failure_metadata)
 
             # Update state manager
             self.state_manager.update_application_state({
@@ -148,12 +164,13 @@ class ChatController:
             logger.error(f"Chat processing failed: {str(e)}")
             processing_time = self._calculate_processing_time(start_time)
             self._update_metrics(False, processing_time, None)
+            sanitized_error = self.api_client_manager.error_handler.get_user_friendly_message(str(e))
             self._set_operation_state(operation_id, OperationState.ERROR, {
                 **operation_context,
-                'error': str(e),
+                'error': sanitized_error,
                 'processing_time': processing_time
             })
-            return False, {"error": f"Chat processing failed: {str(e)}"}
+            return False, {"error": f"Chat processing failed: {sanitized_error}"}
         finally:
             self._clear_current_operation(operation_id)
 

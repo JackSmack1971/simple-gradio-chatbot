@@ -120,6 +120,9 @@ class APIClientManager:
 
             success, response_data = result
 
+            if not success:
+                response_data = self._normalize_failure_payload(response_data)
+
             if success:
                 # Add assistant response to conversation
                 assistant_message = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
@@ -134,20 +137,28 @@ class APIClientManager:
 
             else:
                 # Update request state on failure
-                self._update_request_state(request_id, RequestState.FAILED, {
-                    'error': response_data,
+                failure_state = {
+                    'error': response_data.get('error'),
                     'processing_time': time.time() - start_time
+                }
+                if 'details' in response_data:
+                    failure_state['details'] = response_data['details']
+                if 'retry' in response_data:
+                    failure_state['retry'] = response_data['retry']
+                self._update_request_state(request_id, RequestState.FAILED, {
+                    **failure_state
                 })
 
             return APIRequestResult(success, request_id, response_data)
 
         except Exception as e:
             logger.error(f"Chat completion failed: {str(e)}")
+            sanitized_error = self.error_handler.get_user_friendly_message(str(e))
             self._update_request_state(request_id, RequestState.FAILED, {
-                'error': str(e),
+                'error': sanitized_error,
                 'processing_time': time.time() - start_time
             })
-            return APIRequestResult(False, request_id, {"error": f"Chat completion failed: {str(e)}"})
+            return APIRequestResult(False, request_id, {"error": f"Chat completion failed: {sanitized_error}"})
 
     def _chat_completion_request(self, request_id: str, messages: List[Dict[str, Any]],
                                 model: str, **kwargs) -> Tuple[bool, Dict[str, Any]]:
@@ -184,6 +195,22 @@ class APIClientManager:
         )
 
         return success, result
+
+    def _normalize_failure_payload(self, payload: Any) -> Dict[str, Any]:
+        """Ensure failure payloads follow the structured error contract."""
+        if isinstance(payload, dict):
+            normalized = dict(payload)
+            error_value = normalized.get('error')
+
+            if error_value:
+                normalized['error'] = self.error_handler.get_user_friendly_message(error_value)
+            else:
+                normalized['error'] = self.error_handler.get_user_friendly_message(normalized)
+
+            return normalized
+
+        sanitized_message = self.error_handler.get_user_friendly_message(payload)
+        return {'error': sanitized_message}
 
     def _rate_limited_execution(self, func: Callable, *args, **kwargs) -> Tuple[bool, Any]:
         """Execute function with rate limiting."""
