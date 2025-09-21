@@ -503,11 +503,57 @@ class GradioInterface:
         try:
             # Save settings via config manager
             # This would integrate with the config management system
-            logger.info(f"Settings saved: {settings}")
+            sanitized_settings = self._sanitize_settings_for_logging(settings)
+            # SECURITY: Always redact sensitive values (API keys, tokens, secrets) from logs
+            logger.info(
+                "Settings saved: %s",
+                sanitized_settings,
+                extra={"settings": sanitized_settings}
+            )
             return {"success": True}
         except Exception as e:
             logger.error(f"Settings save failed: {str(e)}")
             return {"error": str(e)}
+
+    def _sanitize_settings_for_logging(self, settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Return a copy of settings with sensitive fields redacted for logging."""
+
+        def sanitize_value(field_name: str, value: Any) -> Any:
+            if isinstance(value, dict):
+                return {inner_key: sanitize_value(inner_key, inner_value)
+                        for inner_key, inner_value in value.items()}
+            if isinstance(value, list):
+                return [
+                    sanitize_value(field_name, item) if not isinstance(item, dict)
+                    else {sub_key: sanitize_value(sub_key, sub_value)
+                          for sub_key, sub_value in item.items()}
+                    for item in value
+                ]
+            if self._is_sensitive_field(field_name):
+                if isinstance(value, str):
+                    return "" if value == "" else "[REDACTED]"
+                return "[REDACTED]" if value is not None else value
+            return value
+
+        sanitized = {}
+        for key, value in (settings or {}).items():
+            sanitized[key] = sanitize_value(key, value)
+        return sanitized
+
+    @staticmethod
+    def _is_sensitive_field(field_name: str) -> bool:
+        """Determine if a field name represents sensitive data that must be redacted."""
+        sensitive_tokens = (
+            "api_key",
+            "apikey",
+            "api-key",
+            "secret",
+            "token",
+            "password",
+            "credential",
+        )
+        field_lower = (field_name or "").lower()
+        return any(token in field_lower for token in sensitive_tokens)
 
     def _handle_api_key_update(self, api_key: str) -> Dict[str, Any]:
         """Handle API key update."""
