@@ -107,6 +107,81 @@ class TestPhase7SystemIntegration:
             assert EventType.USER_INPUT in event_types
             assert EventType.API_RESPONSE in event_types
 
+            user_event = next(event for event in events_received if event.event_type == EventType.USER_INPUT)
+            assert user_event.data["conversation_id"] == conversation_id
+            assert user_event.data["input"] == "Test message"
+            assert user_event.data["valid"] is True
+            assert user_event.data["operation_id"].startswith("op_")
+
+            api_event = next(event for event in events_received if event.event_type == EventType.API_RESPONSE)
+            assert api_event.data["conversation_id"] == conversation_id
+            assert api_event.data["success"] is True
+            assert api_event.data["request_id"].startswith("req_")
+            assert isinstance(api_event.data["processing_time"], float)
+            assert "choices" in api_event.data["response"]
+            assert api_event.data["operation_id"] == user_event.data["operation_id"]
+
+            state_events = [event for event in events_received if event.event_type == EventType.STATE_CHANGE]
+            assert state_events, "Expected at least one state change event"
+            final_state_event = next(
+                event for event in state_events
+                if event.data.get("status") == "idle" and "state_snapshot" in event.data
+            )
+            assert final_state_event.data["operation_id"] == user_event.data["operation_id"]
+            assert "state_snapshot" in final_state_event.data
+            assert "last_operation" in final_state_event.data["state_snapshot"]
+
+        finally:
+            await app.event_bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_streaming_events_include_payloads(self, full_system_app):
+        """Ensure streaming responses emit rich event payloads."""
+        app = full_system_app
+        events_received = []
+
+        def event_handler(event):
+            events_received.append(event)
+
+        app.event_bus.subscribe(EventType.USER_INPUT, event_handler)
+        app.event_bus.subscribe(EventType.API_RESPONSE, event_handler)
+        app.event_bus.subscribe(EventType.STATE_CHANGE, event_handler)
+
+        await app.event_bus.start()
+
+        conversation_id = app.conversation_manager.create_conversation("Streaming Event Test")
+
+        try:
+            success, full_response = await asyncio.to_thread(
+                app.chat_controller.start_streaming_response,
+                "Stream test message",
+                conversation_id,
+                app.config_manager.get("model"),
+            )
+
+            assert success is True
+            assert isinstance(full_response, str)
+            assert full_response
+
+            await asyncio.sleep(0.1)
+
+            event_types = [e.event_type for e in events_received]
+            assert EventType.USER_INPUT in event_types
+            assert EventType.API_RESPONSE in event_types
+
+            user_event = next(event for event in events_received if event.event_type == EventType.USER_INPUT)
+            assert user_event.data["conversation_id"] == conversation_id
+            assert user_event.data["mode"] == "streaming"
+            assert user_event.data["valid"] is True
+
+            api_event = next(event for event in events_received if event.event_type == EventType.API_RESPONSE)
+            assert api_event.data["success"] is True
+            assert api_event.data["response"] == full_response
+            assert api_event.data["operation_id"] == user_event.data["operation_id"]
+
+            state_events = [event for event in events_received if event.event_type == EventType.STATE_CHANGE]
+            assert state_events
+
         finally:
             await app.event_bus.stop()
 
