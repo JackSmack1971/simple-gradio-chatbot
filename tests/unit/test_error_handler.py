@@ -55,6 +55,18 @@ class TestErrorHandler:
         error_type = error_handler.classify_error({}, status_code=500)
         assert error_type == ErrorType.API_ERROR
 
+    def test_classify_error_transient_keywords_string(self, error_handler):
+        """Errors with transient keywords should map to API error."""
+        error_message = "Service temporarily unavailable due to server maintenance"
+        error_type = error_handler.classify_error(error_message)
+        assert error_type == ErrorType.API_ERROR
+
+    def test_classify_error_transient_keywords_in_dict(self, error_handler):
+        """Dict error payloads with transient keywords map to API error."""
+        error_data = {"error": "Server error - please try again later"}
+        error_type = error_handler.classify_error(error_data)
+        assert error_type == ErrorType.API_ERROR
+
     def test_classify_error_validation(self, error_handler):
         """Test validation error classification."""
         error_data = {"code": "model_not_found"}
@@ -114,6 +126,12 @@ class TestErrorHandler:
         """Test retry decision for rate limit errors."""
         assert error_handler.should_retry(ErrorType.RATE_LIMIT, 0) is True
         assert error_handler.should_retry(ErrorType.RATE_LIMIT, 3) is False
+
+    def test_should_retry_unknown_error_fallback(self, error_handler):
+        """Unknown errors should allow only a couple of retry attempts."""
+        assert error_handler.should_retry(ErrorType.UNKNOWN, 0) is True
+        assert error_handler.should_retry(ErrorType.UNKNOWN, 1) is True
+        assert error_handler.should_retry(ErrorType.UNKNOWN, 2) is False
 
     def test_should_retry_authentication_error(self, error_handler):
         """Test retry decision for authentication errors."""
@@ -198,9 +216,9 @@ class TestErrorHandler:
         success, result = error_handler.execute_with_retry(always_failing_func)
 
         assert success is False
-        assert "failed after" in result["error"].lower()
+        assert "persistent failure" in result["error"].lower()
         assert result["retry"]["will_retry"] is False
-        assert mock_sleep.call_count == 3  # Max retries
+        assert mock_sleep.call_count == 2  # Unknown errors only retry twice by default
 
     @patch('time.sleep')
     def test_execute_with_retry_exception(self, mock_sleep, error_handler):
