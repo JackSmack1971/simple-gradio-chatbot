@@ -54,6 +54,8 @@ class ChatController:
 
         # Operation tracking
         self.current_operation: Optional[Dict[str, Any]] = None
+        self.active_operations: Dict[str, Dict[str, Any]] = {}
+        self._operation_index: Dict[str, str] = {}
         self.operation_history: list = []
 
         # Performance metrics
@@ -372,11 +374,17 @@ class ChatController:
                 operation_type = self.current_operation.get('metadata', {}).get('type')
             previous_state = self.current_operation['state']
             request_id = self._extract_request_id(self.current_operation)
+            conversation_id = (
+                self.current_operation.get('conversation_id') or
+                self.current_operation.get('metadata', {}).get('conversation_id')
+            )
             cancel_metadata: Dict[str, Any] = {}
             if operation_type:
                 cancel_metadata['type'] = operation_type
             if request_id:
                 cancel_metadata['request_id'] = request_id
+            if conversation_id:
+                cancel_metadata['conversation_id'] = conversation_id
             self._set_operation_state(operation_id, OperationState.CANCELLED, cancel_metadata)
 
             # Cancel in API client manager if applicable
@@ -454,7 +462,12 @@ class ChatController:
                     return False, "Active conversation could not be found"
 
             # Check current operation state
-            if self.current_operation and self.current_operation['state'] in [
+            if active_conversation_id:
+                conversation_operation = self.active_operations.get(active_conversation_id)
+            else:
+                conversation_operation = None
+
+            if conversation_operation and conversation_operation['state'] in [
                 OperationState.PROCESSING, OperationState.STREAMING
             ]:
                 return False, "Another operation is currently in progress"
@@ -509,12 +522,22 @@ class ChatController:
 
         normalized_metadata = dict(metadata)
 
+        conversation_id = normalized_metadata.get('conversation_id')
+        if not conversation_id and self.current_operation and self.current_operation.get('id') == operation_id:
+            conversation_id = (
+                self.current_operation.get('conversation_id') or
+                self.current_operation.get('metadata', {}).get('conversation_id')
+            )
+
         operation_data = {
             'id': operation_id,
             'state': state,
             'started_at': f"{datetime.now().isoformat()}_{operation_id}",
             'metadata': normalized_metadata
         }
+
+        if conversation_id:
+            operation_data['conversation_id'] = conversation_id
 
         if 'type' in normalized_metadata:
             operation_data['type'] = normalized_metadata['type']
@@ -523,6 +546,10 @@ class ChatController:
 
         self.current_operation = operation_data
         self.operation_history.append(operation_data)
+
+        if conversation_id:
+            self.active_operations[conversation_id] = operation_data
+            self._operation_index[operation_id] = conversation_id
 
         # Keep only recent history
         if len(self.operation_history) > 100:
@@ -533,7 +560,7 @@ class ChatController:
         # Emit event to notify other components about operation lifecycle changes.
         self._emit_event(EventType.STATE_CHANGE, {
             'operation_id': operation_id,
-            'conversation_id': metadata.get('conversation_id'),
+            'conversation_id': conversation_id or metadata.get('conversation_id'),
             'status': state.value,
             'metadata': normalized_metadata
         })
@@ -549,18 +576,29 @@ class ChatController:
 
     def _clear_current_operation(self, operation_id: str) -> None:
         """Clear the live operation pointer once work for the given operation completes."""
-        if not self.current_operation:
+        conversation_id = self._operation_index.get(operation_id)
+        operation_ref: Optional[Dict[str, Any]] = None
+
+        if conversation_id:
+            operation_ref = self.active_operations.get(conversation_id)
+
+        if not operation_ref and self.current_operation and self.current_operation.get('id') == operation_id:
+            operation_ref = self.current_operation
+            conversation_id = operation_ref.get('conversation_id') or operation_ref.get('metadata', {}).get('conversation_id')
+
+        if not operation_ref:
             return
 
-        if self.current_operation['id'] != operation_id:
-            return
-
-        if self.current_operation['state'] in {
+        if operation_ref['state'] in {
             OperationState.IDLE,
             OperationState.ERROR,
             OperationState.CANCELLED
         }:
-            self.current_operation = None
+            if self.current_operation and self.current_operation.get('id') == operation_id:
+                self.current_operation = None
+            if conversation_id:
+                self.active_operations.pop(conversation_id, None)
+            self._operation_index.pop(operation_id, None)
 
     def _record_request_id(self, operation_id: str, request_id: Optional[str]) -> None:
         """Attach the generated API request identifier to tracked operation metadata."""
@@ -571,6 +609,12 @@ class ChatController:
             metadata = self.current_operation.setdefault('metadata', {})
             metadata['request_id'] = request_id
             self.current_operation['request_id'] = request_id
+
+        conversation_id = self._operation_index.get(operation_id)
+        if conversation_id and conversation_id in self.active_operations:
+            active_metadata = self.active_operations[conversation_id].setdefault('metadata', {})
+            active_metadata['request_id'] = request_id
+            self.active_operations[conversation_id]['request_id'] = request_id
 
         for entry in reversed(self.operation_history):
             if entry.get('id') == operation_id:
