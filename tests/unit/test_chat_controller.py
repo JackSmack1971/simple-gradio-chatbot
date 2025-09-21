@@ -71,6 +71,7 @@ class TestChatController:
         assert controller.api_client_manager == mock_api_client_manager
         assert controller.state_manager == mock_state_manager
         assert controller.current_operation is None
+        assert controller.active_operations == {}
         assert isinstance(controller.operation_history, list)
         assert isinstance(controller.metrics, dict)
 
@@ -162,11 +163,11 @@ class TestChatController:
         conversation_id = "conv_test123"
 
         # Set current operation to processing
-        controller.current_operation = {
-            'id': 'op_test123',
-            'state': OperationState.PROCESSING,
-            'metadata': {}
-        }
+        controller._set_operation_state(
+            'op_test123',
+            OperationState.PROCESSING,
+            {'conversation_id': conversation_id}
+        )
 
         mock_message_processor.validate_message.return_value = (True, "", 5)
         controller.state_manager.get_application_state.return_value = {
@@ -301,12 +302,15 @@ class TestChatController:
 
     def test_cancel_current_operation_with_active_operation(self, controller, mock_api_client_manager):
         """Test cancelling an active operation."""
-        controller.current_operation = {
-            'id': 'op_test123',
-            'state': OperationState.PROCESSING,
-            'metadata': {'type': 'chat_completion', 'request_id': 'req_current_123'},
-            'request_id': 'req_current_123',
-        }
+        controller._set_operation_state(
+            'op_test123',
+            OperationState.PROCESSING,
+            {
+                'type': 'chat_completion',
+                'request_id': 'req_current_123',
+                'conversation_id': 'conv_cancel_primary'
+            }
+        )
 
         result = controller.cancel_current_operation()
 
@@ -506,9 +510,11 @@ class TestChatController:
         user_input = "Hello"
         model = "anthropic/claude-3-haiku"
 
-        controller.current_operation = {
-            'state': OperationState.STREAMING
-        }
+        controller._set_operation_state(
+            'op_streaming',
+            OperationState.STREAMING,
+            {'conversation_id': 'conv_test123'}
+        )
 
         mock_message_processor.validate_message.return_value = (True, "", 5)
         controller.state_manager.get_application_state.return_value = {
@@ -651,12 +657,15 @@ class TestChatController:
 
     def test_cleanup(self, controller, mock_api_client_manager, mock_state_manager):
         """Test cleanup method."""
-        controller.current_operation = {
-            'id': 'op_test123',
-            'state': OperationState.PROCESSING,
-            'metadata': {'type': 'chat_completion', 'request_id': 'req_cleanup_123'},
-            'request_id': 'req_cleanup_123',
-        }
+        controller._set_operation_state(
+            'op_test123',
+            OperationState.PROCESSING,
+            {
+                'type': 'chat_completion',
+                'request_id': 'req_cleanup_123',
+                'conversation_id': 'conv_cleanup'
+            }
+        )
 
         controller.cleanup()
 
@@ -713,14 +722,15 @@ class TestChatController:
     def test_concurrent_operation_handling(self, controller, mock_message_processor):
         """Test handling of concurrent operations."""
         # Start first operation
-        controller.current_operation = {
-            'id': 'op_1',
-            'state': OperationState.PROCESSING
-        }
+        conversation_id = "conv_123"
+        controller._set_operation_state(
+            'op_1',
+            OperationState.PROCESSING,
+            {'conversation_id': conversation_id}
+        )
 
         # Try to start second operation
         user_input = "Second message"
-        conversation_id = "conv_123"
 
         mock_message_processor.validate_message.return_value = (True, "", 15)
         controller.state_manager.get_application_state.return_value = {
@@ -737,6 +747,65 @@ class TestChatController:
 
         assert success is False
         assert "Another operation is currently in progress" in response["error"]
+
+    def test_validate_allows_parallel_conversations(self, controller, mock_message_processor):
+        """Validation should permit concurrent operations for different conversations."""
+        controller._set_operation_state(
+            'op_conv_a',
+            OperationState.PROCESSING,
+            {'conversation_id': 'conv_a'}
+        )
+
+        mock_message_processor.validate_message.return_value = (True, "", 8)
+        controller.state_manager.get_application_state.return_value = {
+            'current_conversation': 'conv_b',
+            'conversations': {
+                'conv_a': {'status': 'active'},
+                'conv_b': {'status': 'active'}
+            }
+        }
+        controller.conversation_manager.get_conversation.return_value = {
+            'id': 'conv_b'
+        }
+
+        is_valid, error = controller.validate_chat_request("Hi", "anthropic/claude-3-haiku", 'conv_b')
+
+        assert is_valid is True
+        assert error == ""
+        assert 'conv_a' in controller.active_operations
+        assert 'conv_b' not in controller.active_operations
+
+    def test_clear_current_operation_updates_active_map(self, controller):
+        """Clearing an operation should remove it from active bookkeeping."""
+        controller._set_operation_state(
+            'op_a',
+            OperationState.PROCESSING,
+            {'conversation_id': 'conv_a'}
+        )
+        controller._set_operation_state(
+            'op_b',
+            OperationState.PROCESSING,
+            {'conversation_id': 'conv_b'}
+        )
+
+        # Mark conversation A as finished while conversation B stays active.
+        controller._set_operation_state(
+            'op_a',
+            OperationState.IDLE,
+            {'conversation_id': 'conv_a'}
+        )
+        controller._set_operation_state(
+            'op_b',
+            OperationState.PROCESSING,
+            {'conversation_id': 'conv_b'}
+        )
+
+        controller._clear_current_operation('op_a')
+
+        assert 'conv_a' not in controller.active_operations
+        assert 'conv_b' in controller.active_operations
+        assert controller.active_operations['conv_b']['id'] == 'op_b'
+        assert controller.current_operation['id'] == 'op_b'
 
     def test_operation_state_transitions(self, controller):
         """Test proper operation state transitions."""
