@@ -6,6 +6,7 @@ from enum import Enum
 from datetime import datetime
 
 from ...utils.logging import logger
+from ...utils.events import EventBus, EventType, publish_event_sync
 from ..processors.message_processor import MessageProcessor
 from ..managers.conversation_manager import ConversationManager
 from ..managers.api_client_manager import APIClientManager, APIRequestResult
@@ -34,7 +35,8 @@ class ChatController:
                  message_processor: Optional[MessageProcessor] = None,
                  conversation_manager: Optional[ConversationManager] = None,
                  api_client_manager: Optional[APIClientManager] = None,
-                 state_manager: Optional[StateManager] = None):
+                 state_manager: Optional[StateManager] = None,
+                 event_bus: Optional[EventBus] = None):
         """
         Initialize the ChatController.
 
@@ -48,6 +50,7 @@ class ChatController:
         self.conversation_manager = conversation_manager or ConversationManager()
         self.api_client_manager = api_client_manager or APIClientManager()
         self.state_manager = state_manager or StateManager()
+        self.event_bus = event_bus or EventBus()
 
         # Operation tracking
         self.current_operation: Optional[Dict[str, Any]] = None
@@ -97,6 +100,15 @@ class ChatController:
                 logger.error(response_error)
                 processing_time = self._calculate_processing_time(start_time)
                 self._update_metrics(False, processing_time, None)
+                self._emit_event(EventType.USER_INPUT, {
+                    'operation_id': operation_id,
+                    'conversation_id': conversation_id,
+                    'model': model,
+                    'input': user_input,
+                    'input_length': len(user_input),
+                    'valid': False,
+                    'error': failure_detail
+                })
                 self._set_operation_state(operation_id, OperationState.ERROR, {
                     **operation_context,
                     'error': response_error,
@@ -106,6 +118,15 @@ class ChatController:
 
             # Initialize operation state once validation succeeds
             self._set_operation_state(operation_id, OperationState.PROCESSING, operation_context)
+            self._emit_event(EventType.USER_INPUT, {
+                'operation_id': operation_id,
+                'conversation_id': conversation_id,
+                'model': model,
+                'input': user_input,
+                'input_length': len(user_input),
+                'valid': True,
+                'parameters': sorted(kwargs.keys()) if kwargs else []
+            })
 
             # Process message through API client manager
             api_result = self.api_client_manager.chat_completion(
@@ -122,6 +143,22 @@ class ChatController:
             # Update metrics
             processing_time = self._calculate_processing_time(start_time)
             self._update_metrics(success, processing_time, response_data)
+            error_message = None
+            if not success:
+                if isinstance(response_data, dict):
+                    error_message = response_data.get('error')
+                if not error_message:
+                    error_message = str(response_data)
+            self._emit_event(EventType.API_RESPONSE, {
+                'operation_id': operation_id,
+                'conversation_id': conversation_id,
+                'model': model,
+                'success': success,
+                'request_id': api_result.request_id,
+                'processing_time': processing_time,
+                'response': response_data if success else None,
+                'error': error_message
+            })
 
             # Update operation state with structured error metadata on failure
             if success:
@@ -129,7 +166,8 @@ class ChatController:
                     'type': 'chat_completion',
                     'processing_time': processing_time,
                     'success': success,
-                    'request_id': api_result.request_id
+                    'request_id': api_result.request_id,
+                    'conversation_id': conversation_id
                 })
             else:
                 failure_metadata = {
@@ -137,6 +175,7 @@ class ChatController:
                     'processing_time': processing_time,
                     'success': success,
                     'request_id': api_result.request_id,
+                    'conversation_id': conversation_id,
                     'error': response_data.get('error') if isinstance(response_data, dict) else str(response_data)
                 }
 
@@ -158,6 +197,20 @@ class ChatController:
                 }
             })
 
+            state_snapshot = self.state_manager.get_application_state()
+            current_state = self.current_operation['state'].value if self.current_operation else (
+                OperationState.IDLE.value if success else OperationState.ERROR.value
+            )
+            self._emit_event(EventType.STATE_CHANGE, {
+                'operation_id': operation_id,
+                'conversation_id': conversation_id,
+                'status': current_state,
+                'state_snapshot': {
+                    'operation': state_snapshot.get('operation'),
+                    'last_operation': state_snapshot.get('last_operation')
+                }
+            })
+
             return success, response_data
 
         except Exception as e:
@@ -169,6 +222,16 @@ class ChatController:
                 **operation_context,
                 'error': sanitized_error,
                 'processing_time': processing_time
+            })
+            self._emit_event(EventType.API_RESPONSE, {
+                'operation_id': operation_id,
+                'conversation_id': conversation_id,
+                'model': model,
+                'success': False,
+                'request_id': self._extract_request_id(self.current_operation),
+                'processing_time': processing_time,
+                'response': None,
+                'error': sanitized_error
             })
             return False, {"error": f"Chat processing failed: {sanitized_error}"}
         finally:
@@ -197,6 +260,7 @@ class ChatController:
             'conversation_id': conversation_id,
             'model': model
         }
+        start_time = time.time()
 
         try:
             # Validate request before marking the controller busy
@@ -205,6 +269,16 @@ class ChatController:
                 failure_detail = self._format_validation_failure(error)
                 response_error = f"Streaming failed: {failure_detail}"
                 logger.error(response_error)
+                self._emit_event(EventType.USER_INPUT, {
+                    'operation_id': operation_id,
+                    'conversation_id': conversation_id,
+                    'model': model,
+                    'input': user_input,
+                    'input_length': len(user_input),
+                    'valid': False,
+                    'mode': 'streaming',
+                    'error': failure_detail
+                })
                 self._set_operation_state(operation_id, OperationState.ERROR, {
                     **operation_context,
                     'error': response_error
@@ -213,6 +287,16 @@ class ChatController:
 
             # Initialize operation state
             self._set_operation_state(operation_id, OperationState.STREAMING, operation_context)
+            self._emit_event(EventType.USER_INPUT, {
+                'operation_id': operation_id,
+                'conversation_id': conversation_id,
+                'model': model,
+                'input': user_input,
+                'input_length': len(user_input),
+                'valid': True,
+                'mode': 'streaming',
+                'parameters': sorted(kwargs.keys()) if kwargs else []
+            })
 
             # Start streaming through API client manager
             stream_result = self.api_client_manager.stream_chat_completion(
@@ -226,22 +310,48 @@ class ChatController:
 
             self._record_request_id(operation_id, stream_result.request_id)
             success, full_response = stream_result.success, stream_result.data
+            processing_time = self._calculate_processing_time(start_time)
 
             # Update operation state
             final_state = OperationState.IDLE if success else OperationState.ERROR
+            self._emit_event(EventType.API_RESPONSE, {
+                'operation_id': operation_id,
+                'conversation_id': conversation_id,
+                'model': model,
+                'success': success,
+                'request_id': stream_result.request_id,
+                'processing_time': processing_time,
+                'response': full_response if success else None,
+                'error': None if success else full_response
+            })
+
             self._set_operation_state(operation_id, final_state, {
                 'type': 'streaming_response',
                 'success': success,
                 'response_length': len(full_response) if success else 0,
-                'request_id': stream_result.request_id
+                'request_id': stream_result.request_id,
+                'processing_time': processing_time,
+                'conversation_id': conversation_id
             })
 
             return success, full_response
 
         except Exception as e:
             logger.error(f"Streaming failed: {str(e)}")
+            processing_time = self._calculate_processing_time(start_time)
             self._set_operation_state(operation_id, OperationState.ERROR, {
                 **operation_context,
+                'error': str(e),
+                'processing_time': processing_time
+            })
+            self._emit_event(EventType.API_RESPONSE, {
+                'operation_id': operation_id,
+                'conversation_id': conversation_id,
+                'model': model,
+                'success': False,
+                'request_id': self._extract_request_id(self.current_operation),
+                'processing_time': processing_time,
+                'response': None,
                 'error': str(e)
             })
             return False, f"Streaming failed: {str(e)}"
@@ -419,6 +529,23 @@ class ChatController:
             self.operation_history = self.operation_history[-100:]
 
         logger.debug(f"Operation {operation_id} state changed to {state.value}")
+
+        # Emit event to notify other components about operation lifecycle changes.
+        self._emit_event(EventType.STATE_CHANGE, {
+            'operation_id': operation_id,
+            'conversation_id': metadata.get('conversation_id'),
+            'status': state.value,
+            'metadata': normalized_metadata
+        })
+
+    def _emit_event(self, event_type: EventType, data: Dict[str, Any]) -> None:
+        """Safely publish an event to the configured event bus."""
+        try:
+            payload = dict(data)
+            payload.setdefault('timestamp', datetime.now().isoformat())
+            publish_event_sync(event_type, payload, source="chat_controller", event_bus=self.event_bus)
+        except Exception as exc:
+            logger.warning(f"Failed to publish {event_type.value} event: {exc}")
 
     def _clear_current_operation(self, operation_id: str) -> None:
         """Clear the live operation pointer once work for the given operation completes."""

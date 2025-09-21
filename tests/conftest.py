@@ -123,6 +123,7 @@ async def full_system_app(system_config: Dict[str, Any]) -> SimpleNamespace:
             conversation_manager=conversation_manager,
             api_client_manager=api_client_manager,
             state_manager=state_manager,
+            event_bus=event_bus,
         )
 
         # ------------------------------------------------------------------

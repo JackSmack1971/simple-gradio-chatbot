@@ -18,7 +18,7 @@ class TestUIChatControllerIntegration:
     def setup_method(self):
         """Set up test fixtures."""
         self.event_bus = EventBus()
-        self.chat_controller = ChatController()
+        self.chat_controller = ChatController(event_bus=self.event_bus)
         self.ui = GradioInterface(self.chat_controller, self.event_bus)
 
     def test_ui_initialization_with_chat_controller(self):

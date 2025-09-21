@@ -376,7 +376,8 @@ event_bus = EventBus()
 
 async def publish_event(event_type: EventType, data: Dict[str, Any],
                        priority: EventPriority = EventPriority.NORMAL,
-                       source: str = "unknown") -> None:
+                       source: str = "unknown",
+                       event_bus_instance: Optional[EventBus] = None) -> None:
     """
     Convenience function to publish an event.
 
@@ -386,13 +387,15 @@ async def publish_event(event_type: EventType, data: Dict[str, Any],
         priority: Event priority
         source: Event source
     """
+    bus = event_bus_instance or event_bus
     event = Event(event_type, data, priority, source)
-    await event_bus.publish(event)
+    await bus.publish(event)
 
 
 def publish_event_sync(event_type: EventType, data: Dict[str, Any],
                       priority: EventPriority = EventPriority.NORMAL,
-                      source: str = "unknown") -> None:
+                      source: str = "unknown",
+                      event_bus_instance: Optional[EventBus] = None) -> None:
     """
     Convenience function to publish an event synchronously.
 
@@ -402,5 +405,6 @@ def publish_event_sync(event_type: EventType, data: Dict[str, Any],
         priority: Event priority
         source: Event source
     """
+    bus = event_bus_instance or event_bus
     event = Event(event_type, data, priority, source)
-    event_bus.publish_sync(event)
+    bus.publish_sync(event)
