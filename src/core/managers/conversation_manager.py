@@ -84,6 +84,25 @@ class ConversationManager:
                 logger.error(f"Conversation {conversation_id} not found")
                 return False
 
+            # Detect common argument swapping mistakes where content contains the role
+            # name and role contains the free-form message text. This preserves
+            # backwards compatibility when the caller sends parameters in the wrong order.
+            content_stripped = content.strip()
+            role_stripped = role.strip()
+            normalized_content = content_stripped.lower()
+            normalized_role = role_stripped.lower()
+            valid_roles = {"user", "assistant", "system"}
+
+            if (content_stripped and normalized_content in valid_roles and
+                    role_stripped and normalized_role not in valid_roles):
+                logger.warning(
+                    "Detected swapped message arguments for conversation %s."
+                    " Swapping role and content for validation.",
+                    conversation_id
+                )
+                content = role_stripped
+                role = normalized_content
+
             # Validate and process message
             is_valid, error, msg_metadata = self.message_processor.validate_message(content)
             if not is_valid:

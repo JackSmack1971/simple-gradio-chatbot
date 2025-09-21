@@ -85,6 +85,35 @@ class TestConversationManager:
         mock_storage.save_message.assert_called_once()
         mock_message_processor.validate_message.assert_called_once_with(message)
 
+    def test_add_message_with_swapped_arguments(self, manager, mock_storage, mock_message_processor):
+        """Test message addition when content/role arguments are swapped."""
+        conversation_id = "test-conv-123"
+        swapped_content = "user"
+        swapped_role = "Hello from the user"
+        extra_metadata = {"source": "cli"}
+
+        mock_storage.get_conversation.return_value = {"id": conversation_id, "messages": []}
+        mock_storage.save_message.return_value = True
+        mock_message_processor.validate_message.return_value = (True, "", {"tokens": 5})
+
+        success = manager.add_message(
+            conversation_id,
+            swapped_content,
+            swapped_role,
+            metadata=extra_metadata
+        )
+
+        assert success is True
+        mock_message_processor.validate_message.assert_called_once_with(swapped_role)
+        mock_storage.save_message.assert_called_once()
+
+        saved_message = mock_storage.save_message.call_args[0][1]
+        assert saved_message["role"] == "user"
+        assert saved_message["content"] == swapped_role
+        # Ensure metadata from validation and caller metadata are preserved after swap
+        assert saved_message["metadata"]["tokens"] == 5
+        assert saved_message["metadata"]["source"] == "cli"
+
     def test_add_message_conversation_not_found(self, manager, mock_storage):
         """Test message addition with non-existent conversation."""
         mock_storage.get_conversation.return_value = None
@@ -310,7 +339,7 @@ class TestConversationManager:
         assert metadata["age_days"] == 5
         assert metadata["messages_per_day"] == 0.4  # 2 messages / 5 days
         assert metadata["total_tokens"] == 0  # No tokens in test messages
-        assert metadata["avg_message_length"] == 2.5  # (5 + 5) / 2
+        assert metadata["avg_message_length"] == 5.0  # (5 + 5) / 2 = 5
 
     def test_compute_conversation_metadata_no_messages(self, manager):
         """Test metadata computation with no messages."""
