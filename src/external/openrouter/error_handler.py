@@ -1,6 +1,7 @@
 # src/external/openrouter/error_handler.py
 import time
 import random
+import re
 from typing import Dict, Any, Optional, Tuple, Callable
 from enum import Enum
 
@@ -19,6 +20,9 @@ class ErrorType(Enum):
 
 class ErrorHandler:
     """Comprehensive error handler for OpenRouter API interactions."""
+
+    # Allow a small number of retries for unknown errors before giving up
+    UNKNOWN_RETRY_THRESHOLD = 2
 
     # HTTP status code mappings
     HTTP_ERROR_MESSAGES = {
@@ -81,8 +85,28 @@ class ErrorHandler:
                 return ErrorType.API_ERROR
 
         # Check OpenRouter error codes
+        error_message_fragments = []
+
         if isinstance(error_data, dict):
-            error_code = error_data.get('code') or error_data.get('error', {}).get('code')
+            error_code = error_data.get('code')
+            nested_error = error_data.get('error')
+            if isinstance(nested_error, dict):
+                error_code = error_code or nested_error.get('code')
+                nested_message = nested_error.get('message')
+                if isinstance(nested_message, str):
+                    error_message_fragments.append(nested_message)
+            elif isinstance(nested_error, str):
+                error_message_fragments.append(nested_error)
+
+            for key in ('message', 'detail', 'description'):
+                value = error_data.get(key)
+                if isinstance(value, str):
+                    error_message_fragments.append(value)
+                elif isinstance(value, dict):
+                    nested_message = value.get('message')
+                    if isinstance(nested_message, str):
+                        error_message_fragments.append(nested_message)
+
             if error_code in ['authentication_required', 'authentication_invalid']:
                 return ErrorType.AUTHENTICATION
             elif error_code in ['rate_limit_exceeded']:
@@ -91,9 +115,28 @@ class ErrorHandler:
                 return ErrorType.VALIDATION
 
         # Check for network-related errors
-        error_message = str(error_data).lower()
+        primary_error_text = " ".join(error_message_fragments).strip().lower()
+        fallback_error_text = str(error_data).lower()
+        error_message = (f"{primary_error_text} {fallback_error_text}" if primary_error_text else fallback_error_text)
         if any(keyword in error_message for keyword in ['timeout', 'connection', 'network', 'dns']):
             return ErrorType.NETWORK
+
+        transient_patterns = [
+            r'\btemporary\b',
+            r'\btemporarily\b',
+            r'service\s+unavailable',
+            r'server\s+error',
+            r'server\s+unavailable',
+            r'server\s+issue',
+            r'server\s+busy',
+            r'\bserver\b',
+            r'\bunavailable\b',
+            r'\bmaintenance\b',
+            r'try\s+again\s+later',
+            r'overload'
+        ]
+        if any(re.search(pattern, error_message) for pattern in transient_patterns):
+            return ErrorType.API_ERROR
 
         return ErrorType.UNKNOWN
 
@@ -114,16 +157,21 @@ class ErrorHandler:
 
         # Handle OpenRouter error codes
         if isinstance(error_data, dict):
-            error_code = error_data.get('code') or error_data.get('error', {}).get('code')
+            error_code = error_data.get('code')
+            nested_error = error_data.get('error')
+            if isinstance(nested_error, dict):
+                error_code = error_code or nested_error.get('code')
+
             if error_code and error_code in self.OPENROUTER_ERROR_CODES:
                 return self.OPENROUTER_ERROR_CODES[error_code]
 
             # Check nested error structure
-            nested_error = error_data.get('error', {})
             if isinstance(nested_error, dict):
                 message = nested_error.get('message')
                 if message:
                     return self._sanitize_error_message(message)
+            elif isinstance(nested_error, str):
+                return self._sanitize_error_message(nested_error)
 
         # Handle string error messages
         if isinstance(error_data, str):
@@ -131,9 +179,14 @@ class ErrorHandler:
 
         # Handle generic error dict
         if isinstance(error_data, dict):
-            message = error_data.get('message') or error_data.get('error')
-            if message:
-                return self._sanitize_error_message(str(message))
+            for key in ('message', 'error'):
+                value = error_data.get(key)
+                if isinstance(value, str) and value:
+                    return self._sanitize_error_message(value)
+                elif isinstance(value, dict):
+                    nested_message = value.get('message')
+                    if isinstance(nested_message, str) and nested_message:
+                        return self._sanitize_error_message(nested_message)
 
         # Fallback message
         return "An unexpected error occurred. Please try again later."
@@ -158,7 +211,6 @@ class ErrorHandler:
 
         sanitized = message
         for pattern in sensitive_patterns:
-            import re
             sanitized = re.sub(pattern, '[REDACTED]', sanitized, flags=re.IGNORECASE)
 
         return sanitized
@@ -176,6 +228,10 @@ class ErrorHandler:
         """
         if attempt_count >= self.max_retries:
             return False
+
+        if error_type == ErrorType.UNKNOWN:
+            allowed_attempts = min(self.UNKNOWN_RETRY_THRESHOLD, self.max_retries)
+            return attempt_count < allowed_attempts
 
         # Retry these error types
         retryable_errors = [
